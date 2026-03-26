@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
+import config from "./config/index.js";
 // Importing the full compile route can execute heavy or environment-specific code
 // (and in some dev environments the compile route files can fail to load). For
 // the purposes of verifying rate limiting in this environment we mount a
@@ -11,7 +12,7 @@ import rateLimit from "express-rate-limit";
 // import invokeRoute from "./routes/invoke.js";
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = config.app.port;
 
 // Basic middleware
 app.use(cors());
@@ -21,8 +22,8 @@ app.use(express.json());
 // Global (lenient) limiter to protect against very abusive traffic while
 // not affecting normal users. Applied to all routes.
 const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // limit each IP to 1000 requests per windowMs
+  windowMs: config.rateLimit.global.windowMs,
+  max: config.rateLimit.global.max,
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
   handler: (req, res) => {
@@ -37,8 +38,8 @@ const globalLimiter = rateLimit({
 // Strict limiter for the heavy /api/compile endpoint.
 // This prevents automated abuse of compile which is resource intensive.
 const compileLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 15, // limit each IP to 15 compile requests per windowMs
+  windowMs: config.rateLimit.compile.windowMs,
+  max: config.rateLimit.compile.max,
   standardHeaders: true,
   legacyHeaders: false,
   handler: (req, res) => {
@@ -88,5 +89,7 @@ app.get("/api/health", (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Backend server running on http://localhost:${PORT}`);
+  console.log(
+    `Backend server running on http://localhost:${PORT} (env=${config.app.env})`,
+  );
 });

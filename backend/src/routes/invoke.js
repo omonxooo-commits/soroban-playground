@@ -1,4 +1,5 @@
 import express from "express";
+import config from "../config/index.js";
 
 const router = express.Router();
 
@@ -82,13 +83,10 @@ router.post("/", async (req, res) => {
   const { contractId, functionName, args } = req.body;
   const normalizedArgs = normalizeArgs(args);
 
-  console.log(
-    `Invoking ${contractId} -> ${functionName} with args:`,
-    normalizedArgs,
-  );
+  console.log(`Invoking ${contractId} -> ${functionName} with args:`, normalizedArgs);
 
   // Simulated invocation response for the MVP
-  // Real implementation would use: soroban contract invoke --id {contractId} --source alice --network testnet -- {functionName} --name {args.name}
+  // Real implementation would use the Soroban CLI or SDK to perform the invocation
   setTimeout(() => {
     res.json({
       success: true,
@@ -101,7 +99,7 @@ router.post("/", async (req, res) => {
       message: `Function "${functionName}" invoked successfully`,
       invokedAt: new Date().toISOString(),
     });
-  }, 1000);
+  }, config.simulationDelays.invokeMs);
 });
 
 export default router;

@@ -10,7 +10,11 @@ router.post("/", async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ error: "No code provided" });
 
+<<<<<<< HEAD
   // Unique temp directory per compile
+=======
+  // Define a temporary working directory for this compilation
+>>>>>>> 5b54cbf (feat/ add environment variable management via dotenv)
   const uniqueSuffix =
     Date.now() + "_" + Math.random().toString(36).substring(2, 8);
   const tempDir = path.resolve(
@@ -51,7 +55,13 @@ lto = true
     // Write the contract code
     await fs.writeFile(path.join(tempDir, "src", "lib.rs"), code);
 
+<<<<<<< HEAD
     // Build command and timeout come from config
+=======
+    // Execute Soroban CLI (or cargo block)
+    // Note: In a real server you might queue these or containerize. Here we spawn.
+    // The build command is configurable via environment variable or defaults in config.
+>>>>>>> 5b54cbf (feat/ add environment variable management via dotenv)
     const command = config.compile.command;
 
     exec(
