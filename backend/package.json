@@ -7,13 +7,16 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "test": "node ../node_modules/jest/bin/jest.js"
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest --testPathPattern=tests/"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "express": "^4.18.0"
+  },
+  "jest": {
+    "testEnvironment": "node"
   },
   "devDependencies": {
     "@babel/core": "^7.24.0",
