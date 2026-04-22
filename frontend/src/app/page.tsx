@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Activity,
   BookOpen,
@@ -60,6 +60,16 @@ type ApiErrorPayload = {
   details?: unknown;
 };
 
+type InvokeProgressEvent = {
+  type: string;
+  requestId?: string;
+  contractId?: string;
+  functionName?: string;
+  status?: string;
+  detail?: string;
+  timestamp?: string;
+};
+
 function formatApiError(error: unknown) {
   if (error instanceof Error) {
     return error.message;
@@ -90,6 +100,9 @@ export default function Home() {
   const [hasCompiled, setHasCompiled] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
   const [isInvoking, setIsInvoking] = useState(false);
+  const [invokeProgress, setInvokeProgress] = useState<InvokeProgressEvent[]>([]);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectRef = useRef(0);
 
   const [compileSummary, setCompileSummary] = useState<string>();
   const [compileError, setCompileError] = useState<string | null>(null);
@@ -138,6 +151,50 @@ export default function Home() {
 
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const connect = () => {
+      if (cancelled) return;
+
+      const wsUrl = DEFAULT_API_BASE_URL.replace(/^http/, "ws");
+      const socket = new WebSocket(`${wsUrl}/ws`);
+      wsRef.current = socket;
+
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data) as InvokeProgressEvent;
+          if (payload.type === "invoke-progress") {
+            setInvokeProgress((prev) => [...prev.slice(-19), payload]);
+            appendLog(
+              `[ws:${payload.status ?? "update"}] ${payload.detail ?? "progress"}`
+            );
+          }
+        } catch {
+          appendLog("[warn] Received malformed websocket payload.");
+        }
+      };
+
+      socket.onclose = () => {
+        if (cancelled) return;
+        const delay = Math.min(1000 * 2 ** reconnectRef.current, 15000);
+        reconnectRef.current += 1;
+        window.setTimeout(connect, delay);
+      };
+
+      socket.onerror = () => {
+        socket.close();
+      };
+    };
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      wsRef.current?.close();
     };
   }, []);
 
@@ -266,11 +323,11 @@ export default function Home() {
       });
 
       appendLog(`[invoke] ${payload.message}`);
-      appendLog(`[invoke] Output: ${payload.output}`);
+      appendLog(`[invoke] Output: ${JSON.stringify(payload.output)}`);
       setStorage((prev) => ({
         ...prev,
         lastFunction: payload.functionName,
-        lastOutput: payload.output,
+        lastOutput: JSON.stringify(payload.output),
         invokedAt: payload.invokedAt,
         ...toStorageRecord(payload.args),
       }));
@@ -400,6 +457,32 @@ export default function Home() {
               isInvoking={isInvoking}
               contractId={contractId}
             />
+            <div className="rounded-2xl border border-white/8 bg-white/5 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
+                  Live Invocation
+                </p>
+                <p className="text-xs text-slate-500">
+                  {invokeProgress.length} events
+                </p>
+              </div>
+              <div className="space-y-2">
+                {invokeProgress.slice(-5).map((event, index) => (
+                  <div
+                    key={`${event.timestamp ?? "event"}-${index}`}
+                    className="rounded-xl border border-white/8 bg-slate-950/50 px-3 py-2 font-mono text-[11px] text-slate-300"
+                  >
+                    <span className="text-cyan-300">{event.status ?? event.type}</span>
+                    <span className="ml-2 text-slate-500">
+                      {event.timestamp ?? ""}
+                    </span>
+                    <div className="mt-1 whitespace-pre-wrap">
+                      {event.detail ?? "connected"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
             <StorageViewer storage={storage} />
             <Console logs={logs} />
           </aside>
