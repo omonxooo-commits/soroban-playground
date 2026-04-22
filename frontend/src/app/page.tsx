@@ -70,6 +70,11 @@ type InvokeProgressEvent = {
   timestamp?: string;
 };
 
+type DeployProgressEvent = InvokeProgressEvent & {
+  batchId?: string;
+  contractName?: string;
+};
+
 function formatApiError(error: unknown) {
   if (error instanceof Error) {
     return error.message;
@@ -101,6 +106,17 @@ export default function Home() {
   const [isDeploying, setIsDeploying] = useState(false);
   const [isInvoking, setIsInvoking] = useState(false);
   const [invokeProgress, setInvokeProgress] = useState<InvokeProgressEvent[]>([]);
+  const [deployProgress, setDeployProgress] = useState<DeployProgressEvent[]>([]);
+  const [batchContractsRaw, setBatchContractsRaw] = useState(
+    JSON.stringify(
+      [
+        { id: "core", contractName: "core", wasmPath: "core.wasm" },
+        { id: "api", contractName: "api", wasmPath: "api.wasm", dependencies: ["core"] },
+      ],
+      null,
+      2
+    )
+  );
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef(0);
 
@@ -171,6 +187,11 @@ export default function Home() {
             setInvokeProgress((prev) => [...prev.slice(-19), payload]);
             appendLog(
               `[ws:${payload.status ?? "update"}] ${payload.detail ?? "progress"}`
+            );
+          } else if (payload.type === "deploy-progress") {
+            setDeployProgress((prev) => [...prev.slice(-29), payload]);
+            appendLog(
+              `[deploy:${payload.status ?? "update"}] ${payload.detail ?? "progress"}`
             );
           }
         } catch {
@@ -292,6 +313,30 @@ export default function Home() {
       appendLog(`[error] Deploy failed: ${formatApiError(error)}`);
     } finally {
       setIsDeploying(false);
+    }
+  };
+
+  const handleBatchDeploy = async () => {
+    let contracts: Array<Record<string, unknown>>;
+    try {
+      contracts = JSON.parse(batchContractsRaw);
+    } catch {
+      appendLog("[error] Batch contracts must be valid JSON.");
+      return;
+    }
+
+    appendLog(`[deploy] Starting batch deploy for ${contracts.length} contracts`);
+    try {
+      const payload = await requestJson<{
+        success: boolean;
+        status: string;
+        batchId: string;
+      }>("/api/deploy/batch", {
+        contracts,
+      });
+      appendLog(`[deploy] Batch ${payload.batchId} finished with ${payload.status}`);
+    } catch (error) {
+      appendLog(`[error] Batch deploy failed: ${formatApiError(error)}`);
     }
   };
 
@@ -457,6 +502,51 @@ export default function Home() {
               isInvoking={isInvoking}
               contractId={contractId}
             />
+            <div className="rounded-2xl border border-white/8 bg-white/5 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
+                  Batch Deploy
+                </p>
+                <button
+                  onClick={handleBatchDeploy}
+                  className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-1 text-xs font-medium text-cyan-200 transition hover:bg-cyan-400/20"
+                >
+                  Deploy All
+                </button>
+              </div>
+              <textarea
+                value={batchContractsRaw}
+                onChange={(e) => setBatchContractsRaw(e.target.value)}
+                className="h-44 w-full rounded-xl border border-white/10 bg-slate-950/70 p-3 font-mono text-[11px] text-slate-200 outline-none"
+              />
+            </div>
+            <div className="rounded-2xl border border-white/8 bg-white/5 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
+                  Pipeline Tracker
+                </p>
+                <p className="text-xs text-slate-500">
+                  {deployProgress.filter((event) => event.status === "deployed").length}/
+                  {deployProgress.length}
+                </p>
+              </div>
+              <div className="space-y-2">
+                {deployProgress.slice(-6).map((event, index) => (
+                  <div
+                    key={`${event.timestamp ?? "deploy"}-${index}`}
+                    className="rounded-xl border border-white/8 bg-slate-950/50 px-3 py-2 text-xs text-slate-300"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-cyan-300">
+                        {event.contractName ?? event.batchId ?? "batch"}
+                      </span>
+                      <span className="text-slate-500">{event.status}</span>
+                    </div>
+                    <p className="mt-1 text-slate-400">{event.detail}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
             <div className="rounded-2xl border border-white/8 bg-white/5 p-4">
               <div className="mb-3 flex items-center justify-between">
                 <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">

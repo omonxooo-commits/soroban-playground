@@ -1,5 +1,6 @@
 import { WebSocketServer } from 'ws';
 import { invokeProgressBus } from './services/invokeService.js';
+import { deployProgressBus } from './services/deployService.js';
 
 const clients = new Set();
 
@@ -37,14 +38,17 @@ export function setupWebsocketServer(httpServer) {
     });
   });
 
-  invokeProgressBus.on('progress', (event) => {
-    const message = JSON.stringify({ type: 'invoke-progress', ...event });
+  const forward = (type) => (event) => {
+    const message = JSON.stringify({ type, ...event });
     for (const socket of clients) {
       if (socket.readyState === socket.OPEN) {
         socket.send(message);
       }
     }
-  });
+  };
+
+  invokeProgressBus.on('progress', forward('invoke-progress'));
+  deployProgressBus.on('progress', forward('deploy-progress'));
 
   return wss;
 }
