@@ -16,6 +16,7 @@ import invokeRoute from './routes/invoke.js';
 import { startCleanupWorker } from './cleanupWorker.js';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import { setupWebsocketServer } from './websocket.js';
+import { initializeCompileService } from './services/compileService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -176,10 +177,10 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 setupWebsocketServer(server);
+await initializeCompileService();
+startCleanupWorker();
 server.listen(PORT, () => {
   console.log(`Backend server running on http://localhost:${PORT}`);
 });
-
-startCleanupWorker();
 
 export default app;

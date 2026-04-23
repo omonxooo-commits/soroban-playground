@@ -1,6 +1,7 @@
 import { WebSocketServer } from 'ws';
 import { invokeProgressBus } from './services/invokeService.js';
 import { deployProgressBus } from './services/deployService.js';
+import { compileProgressBus } from './services/compileService.js';
 
 const clients = new Set();
 
@@ -49,6 +50,7 @@ export function setupWebsocketServer(httpServer) {
 
   invokeProgressBus.on('progress', forward('invoke-progress'));
   deployProgressBus.on('progress', forward('deploy-progress'));
+  compileProgressBus.on('progress', forward('compile-progress'));
 
   return wss;
 }
