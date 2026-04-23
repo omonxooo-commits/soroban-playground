@@ -17,6 +17,11 @@ import Console from "@/components/Console";
 import DeployPanel from "@/components/DeployPanel";
 import CallPanel from "@/components/CallPanel";
 import StorageViewer from "@/components/StorageViewer";
+import PredictionMarketPanel, { MarketData } from "@/components/PredictionMarketPanel";
+import WalletConnect from "@/components/WalletConnect";
+import TransactionStatus from "@/components/TransactionStatus";
+import { useFreighterWallet } from "@/hooks/useFreighterWallet";
+import { useTransactionTracker } from "@/hooks/useTransactionTracker";
 
 const DEFAULT_CODE = `#![no_std]
 use soroban_sdk::{contract, contractimpl, symbol_short, Env, Symbol};
@@ -181,6 +186,14 @@ export default function Home() {
   const [lastArtifactName, setLastArtifactName] =
     useState<string>("contract.wasm");
   const [lastDeployMessage, setLastDeployMessage] = useState<string>();
+
+  // Prediction market state
+  const [markets, setMarkets] = useState<MarketData[]>([]);
+  const [isPredictionLoading, setIsPredictionLoading] = useState(false);
+
+  // Wallet + transaction tracking
+  const wallet = useFreighterWallet();
+  const { transactions, addTx, updateTx, clearTx } = useTransactionTracker();
 
   const appendLog = (msg: string) => {
     setLogs((prev) => [...prev, msg]);
@@ -511,6 +524,153 @@ export default function Home() {
     }
   };
 
+  // ── Prediction Market handlers ─────────────────────────────────────────────
+
+  const handleCreateMarket = async (params: {
+    question: string;
+    marketType: number;
+    deadline: number;
+    oracle: string;
+  }) => {
+    if (!contractId) return;
+    const txId = addTx(`Create market: "${params.question.slice(0, 30)}…"`);
+    setIsPredictionLoading(true);
+    appendLog(`[market] Creating market: ${params.question}`);
+    try {
+      const payload = await requestJson<{ output: string }>("/api/invoke", {
+        contractId,
+        functionName: "create_market",
+        args: {
+          question: params.question,
+          market_type: String(params.marketType),
+          resolution_deadline: String(params.deadline),
+          oracle: params.oracle,
+        },
+      });
+      const newId = markets.length + 1;
+      setMarkets((prev) => [
+        ...prev,
+        {
+          id: newId,
+          question: params.question,
+          marketType: params.marketType === 0 ? "Binary" : "Scalar",
+          status: "Open",
+          totalYesStake: 0,
+          totalNoStake: 0,
+          resolutionDeadline: params.deadline,
+        },
+      ]);
+      updateTx(txId, { status: "success", hash: payload.output });
+      appendLog(`[market] Market #${newId} created`);
+    } catch (error) {
+      updateTx(txId, { status: "error", error: formatApiError(error) });
+      appendLog(`[error] Create market failed: ${formatApiError(error)}`);
+    } finally {
+      setIsPredictionLoading(false);
+    }
+  };
+
+  const handlePlaceBet = async (marketId: number, outcome: number, stake: number) => {
+    if (!contractId) return;
+    const label = `Bet ${stake} XLM on ${outcome === 1 ? "YES" : "NO"} (market #${marketId})`;
+    const txId = addTx(label);
+    setIsPredictionLoading(true);
+    appendLog(`[market] ${label}`);
+    try {
+      await requestJson("/api/invoke", {
+        contractId,
+        functionName: "place_bet",
+        args: {
+          market_id: String(marketId),
+          outcome: String(outcome),
+          stake: String(stake),
+        },
+      });
+      setMarkets((prev) =>
+        prev.map((m) =>
+          m.id === marketId
+            ? {
+                ...m,
+                totalYesStake: outcome === 1 ? m.totalYesStake + stake : m.totalYesStake,
+                totalNoStake: outcome === 0 ? m.totalNoStake + stake : m.totalNoStake,
+              }
+            : m
+        )
+      );
+      updateTx(txId, { status: "success" });
+      appendLog(`[market] Bet placed`);
+    } catch (error) {
+      updateTx(txId, { status: "error", error: formatApiError(error) });
+      appendLog(`[error] Place bet failed: ${formatApiError(error)}`);
+    } finally {
+      setIsPredictionLoading(false);
+    }
+  };
+
+  const handleResolveMarket = async (marketId: number, outcome: number) => {
+    if (!contractId) return;
+    const txId = addTx(`Resolve market #${marketId} → ${outcome === 1 ? "YES" : "NO"}`);
+    setIsPredictionLoading(true);
+    try {
+      await requestJson("/api/invoke", {
+        contractId,
+        functionName: "resolve_market",
+        args: { market_id: String(marketId), winning_outcome: String(outcome) },
+      });
+      setMarkets((prev) =>
+        prev.map((m) =>
+          m.id === marketId
+            ? { ...m, status: "Resolved", winningOutcome: outcome === 1 ? "YES" : "NO" }
+            : m
+        )
+      );
+      updateTx(txId, { status: "success" });
+      appendLog(`[market] Market #${marketId} resolved`);
+    } catch (error) {
+      updateTx(txId, { status: "error", error: formatApiError(error) });
+      appendLog(`[error] Resolve failed: ${formatApiError(error)}`);
+    } finally {
+      setIsPredictionLoading(false);
+    }
+  };
+
+  const handleCancelMarket = async (marketId: number) => {
+    if (!contractId) return;
+    const txId = addTx(`Cancel market #${marketId}`);
+    setIsPredictionLoading(true);
+    try {
+      await requestJson("/api/invoke", {
+        contractId,
+        functionName: "cancel_market",
+        args: { market_id: String(marketId) },
+      });
+      setMarkets((prev) =>
+        prev.map((m) => (m.id === marketId ? { ...m, status: "Cancelled" } : m))
+      );
+      updateTx(txId, { status: "success" });
+      appendLog(`[market] Market #${marketId} cancelled`);
+    } catch (error) {
+      updateTx(txId, { status: "error", error: formatApiError(error) });
+      appendLog(`[error] Cancel failed: ${formatApiError(error)}`);
+    } finally {
+      setIsPredictionLoading(false);
+    }
+  };
+
+  const handleCalculatePayout = async (marketId: number): Promise<number> => {
+    if (!contractId || !wallet.address) return 0;
+    try {
+      const payload = await requestJson<{ output: string }>("/api/invoke", {
+        contractId,
+        functionName: "calculate_payout",
+        args: { market_id: String(marketId), trader: wallet.address },
+      });
+      return parseInt(payload.output ?? "0");
+    } catch {
+      return 0;
+    }
+  };
+
   return (
     <div className="min-h-screen px-4 py-4 text-slate-100 sm:px-6 lg:px-8">
       <div className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-[1600px] flex-col overflow-hidden rounded-[28px] border border-white/8 bg-slate-950/60 shadow-[0_30px_120px_rgba(2,8,23,0.7)] backdrop-blur">
@@ -794,6 +954,19 @@ export default function Home() {
               </div>
             </div>
             <StorageViewer storage={storage} />
+            <WalletConnect wallet={wallet} />
+            <PredictionMarketPanel
+              contractId={contractId}
+              walletAddress={wallet.address ?? undefined}
+              onCreateMarket={handleCreateMarket}
+              onPlaceBet={handlePlaceBet}
+              onResolveMarket={handleResolveMarket}
+              onCancelMarket={handleCancelMarket}
+              onCalculatePayout={handleCalculatePayout}
+              markets={markets}
+              isLoading={isPredictionLoading}
+            />
+            <TransactionStatus transactions={transactions} onClear={clearTx} />
             <Console logs={logs} />
           </aside>
         </main>
