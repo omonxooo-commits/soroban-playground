@@ -5,6 +5,7 @@ import Editor from "@/components/Editor";
 import Console from "@/components/Console";
 import DeployPanel from "@/components/DeployPanel";
 import CallPanel from "@/components/CallPanel";
+import WasmArtifactPanel from "@/components/WasmArtifactPanel";
 import StorageViewer from "@/components/StorageViewer";
 import TransactionCallGraph from "@/components/TransactionCallGraph";
 import {
@@ -12,6 +13,7 @@ import {
   type TransactionCallGraph as TransactionCallGraphState,
   type LedgerState,
 } from "@/utils/transactionGraph";
+import { parseWasmArtifact, type WasmArtifactAnalysis } from "@/utils/wasmInspector";
 import {
   createInitialStorageTimelineState,
   storageTimelineReducer,
@@ -32,6 +34,22 @@ impl HelloContract {
 }
 `;
 
+const API_BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:5000";
+
+interface CompileArtifactPayload {
+  name?: string;
+  sizeBytes?: number;
+  createdAt?: string;
+}
+
+interface CompileSuccessPayload {
+  success?: boolean;
+  message?: string;
+  logs?: unknown;
+  artifact?: CompileArtifactPayload;
+  wasmBase64?: string;
+}
+
 function shortId(contractId: string): string {
   return contractId.length > 14 ? `${contractId.slice(0, 8)}...${contractId.slice(-4)}` : contractId;
 }
@@ -51,6 +69,37 @@ function asLedgerNumber(value: unknown): number {
   }
 
   return 0;
+}
+
+function formatByteSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(2)} KB`;
+  }
+
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function extractCompileFailureMessage(payload: unknown): string {
+  if (!isRecord(payload)) {
+    return "Compilation failed";
+  }
+
+  const summary = typeof payload.message === "string" ? payload.message : "Compilation failed";
+  const details = payload.details;
+
+  if (typeof details === "string" && details.trim()) {
+    return `${summary}: ${details}`;
+  }
+
+  if (isRecord(details) && typeof details.details === "string" && details.details.trim()) {
+    return `${summary}: ${details.details}`;
+  }
+
+  return summary;
 }
 
 function buildHexPayload(seed: number): string {
@@ -178,6 +227,12 @@ export default function Home() {
   const [hasCompiled, setHasCompiled] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
   const [isInvoking, setIsInvoking] = useState(false);
+  const [isAnalyzingWasm, setIsAnalyzingWasm] = useState(false);
+  const [compileSummary, setCompileSummary] = useState<string | undefined>(undefined);
+  const [compileError, setCompileError] = useState<string | null>(null);
+  const [wasmParseError, setWasmParseError] = useState<string | null>(null);
+  const [wasmAnalysis, setWasmAnalysis] = useState<WasmArtifactAnalysis | null>(null);
+  const [compiledArtifact, setCompiledArtifact] = useState<CompileArtifactPayload | null>(null);
 
   // Contract Data
   const [contractId, setContractId] = useState<string | undefined>(undefined);
@@ -203,15 +258,90 @@ export default function Home() {
 
   const handleCompile = async () => {
     setIsCompiling(true);
+    setHasCompiled(false);
+    setCompileSummary(undefined);
+    setCompileError(null);
+    setWasmParseError(null);
+    setWasmAnalysis(null);
+    setCompiledArtifact(null);
     appendLog("Compiling contract...");
 
-    // Simulate backend call
-    setTimeout(() => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/compile`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ code }),
+      });
+
+      const payload = (await response.json().catch(() => null)) as unknown;
+
+      if (!response.ok) {
+        throw new Error(extractCompileFailureMessage(payload));
+      }
+
+      if (!isRecord(payload)) {
+        throw new Error("Compilation failed: invalid server response");
+      }
+
+      const compilePayload = payload as CompileSuccessPayload;
+      const compileLogs = Array.isArray(compilePayload.logs)
+        ? compilePayload.logs.filter((item): item is string => typeof item === "string")
+        : [];
+      const artifact = isRecord(compilePayload.artifact)
+        ? {
+            name: typeof compilePayload.artifact.name === "string" ? compilePayload.artifact.name : undefined,
+            sizeBytes:
+              typeof compilePayload.artifact.sizeBytes === "number" ? compilePayload.artifact.sizeBytes : undefined,
+            createdAt: typeof compilePayload.artifact.createdAt === "string" ? compilePayload.artifact.createdAt : undefined,
+          }
+        : null;
+
+      compileLogs.forEach((line) => appendLog(line));
       setIsCompiling(false);
       setHasCompiled(true);
       appendLog("✓ Compilation successful");
-      appendLog("WASM size: 14.5 KB");
-    }, 2000);
+
+      if (artifact?.sizeBytes !== undefined) {
+        appendLog(`WASM size: ${formatByteSize(artifact.sizeBytes)} (${artifact.sizeBytes} bytes)`);
+      }
+
+      setCompiledArtifact(artifact);
+      setCompileSummary(
+        artifact?.sizeBytes !== undefined
+          ? `Compilation successful (${artifact.name ?? "artifact"} • ${formatByteSize(artifact.sizeBytes)})`
+          : "Compilation successful",
+      );
+
+      if (!compilePayload.wasmBase64) {
+        const missingPayloadMessage = "Compiled artifact did not include wasm bytes for browser-side analysis.";
+        setWasmParseError(missingPayloadMessage);
+        appendLog(`⚠ ${missingPayloadMessage}`);
+        return;
+      }
+
+      setIsAnalyzingWasm(true);
+      appendLog("Analyzing wasm artifact in browser...");
+      try {
+        const parsedWasm = await parseWasmArtifact(compilePayload.wasmBase64);
+        setWasmAnalysis(parsedWasm);
+        appendLog(
+          `✓ Wasm analysis complete: ${parsedWasm.exportFunctions.length} function exports, ${parsedWasm.watLines.length.toLocaleString()} WAT lines.`,
+        );
+      } catch (analysisError) {
+        const message = analysisError instanceof Error ? analysisError.message : "Failed to parse compiled wasm artifact";
+        setWasmParseError(message);
+        appendLog(`⚠ Wasm analysis failed: ${message}`);
+      } finally {
+        setIsAnalyzingWasm(false);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Compilation failed";
+      setCompileError(message);
+      setIsCompiling(false);
+      appendLog(`✗ ${message}`);
+    }
   };
 
   const handleDeploy = async () => {
@@ -356,7 +486,16 @@ export default function Home() {
             isCompiling={isCompiling}
             isDeploying={isDeploying}
             hasCompiled={hasCompiled}
+            compileSummary={compileSummary}
+            compileError={compileError}
             contractId={contractId}
+          />
+          <WasmArtifactPanel
+            analysis={wasmAnalysis}
+            artifactName={compiledArtifact?.name}
+            artifactCreatedAt={compiledArtifact?.createdAt}
+            isAnalyzing={isAnalyzingWasm}
+            parseError={wasmParseError}
           />
           <CallPanel onInvoke={handleInvoke} isInvoking={isInvoking} contractId={contractId} />
           <TransactionCallGraph

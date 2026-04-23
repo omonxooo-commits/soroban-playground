@@ -3,6 +3,7 @@ jest.mock('fs/promises', () => ({
   mkdir: jest.fn(),
   writeFile: jest.fn(),
   stat: jest.fn(),
+  readFile: jest.fn(),
   rm: jest.fn(),
 }));
 
@@ -14,6 +15,7 @@ import express from 'express';
 import request from 'supertest';
 import fs from 'fs/promises';
 import { exec } from 'child_process';
+import { createHash } from 'crypto';
 import compileRouter from '../src/routes/compile.js';
 import { errorHandler } from '../src/middleware/errorHandler.js';
 
@@ -27,6 +29,7 @@ describe('POST /api/compile', () => {
     jest.clearAllMocks();
     fs.mkdir.mockResolvedValue(undefined);
     fs.writeFile.mockResolvedValue(undefined);
+    fs.readFile.mockResolvedValue(Buffer.from([0x00, 0x61, 0x73, 0x6d]));
     fs.rm.mockResolvedValue(undefined);
   });
 
@@ -113,11 +116,13 @@ describe('POST /api/compile', () => {
   });
 
   it('returns 200 with artifact metadata when WASM is generated', async () => {
+    const wasmBuffer = Buffer.from([0x00, 0x61, 0x73, 0x6d]);
     const fakeStats = {
       size: 2048,
       birthtime: new Date('2024-01-01T00:00:00.000Z'),
     };
     fs.stat.mockResolvedValue(fakeStats);
+    fs.readFile.mockResolvedValue(wasmBuffer);
     exec.mockImplementation((cmd, opts, cb) =>
       cb(null, 'Compiling soroban_contract v0.0.0', '')
     );
@@ -137,6 +142,10 @@ describe('POST /api/compile', () => {
       },
     });
     expect(Array.isArray(res.body.logs)).toBe(true);
+    expect(res.body.wasmBase64).toBe(wasmBuffer.toString('base64'));
+    expect(res.body.wasmSha256).toBe(
+      createHash('sha256').update(wasmBuffer).digest('hex')
+    );
   });
 
   it('returns 500 when WASM file does not exist after a successful build', async () => {
@@ -207,5 +216,17 @@ describe('POST /api/compile', () => {
       expect.stringContaining('.tmp_compile_'),
       { recursive: true, force: true }
     );
+  });
+
+  it('returns 400 when dependencies payload is invalid', async () => {
+    const res = await request(app)
+      .post('/api/compile')
+      .send({ code: '#![no_std]', dependencies: ['serde=1.0'] });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({
+      message: 'Invalid dependencies payload',
+      statusCode: 400,
+    });
   });
 });
