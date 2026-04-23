@@ -18,6 +18,7 @@ import {
   createInitialStorageTimelineState,
   storageTimelineReducer,
 } from "@/state/storageTimeline";
+import { useConsoleStream } from "@/hooks/useConsoleStream";
 import { Sparkles, Code2, BookOpen } from "lucide-react";
 
 const DEFAULT_CODE = `#![no_std]
@@ -220,7 +221,16 @@ function createMockInvocationPayload(
 
 export default function Home() {
   const [code, setCode] = useState(DEFAULT_CODE);
-  const [logs, setLogs] = useState<string[]>([]);
+  const {
+    logs,
+    baseLineNumber,
+    droppedMessages,
+    isIngestionPaused,
+    setIngestionPaused,
+    appendLog,
+    appendLogs,
+    clearLogs,
+  } = useConsoleStream();
 
   // Status states
   const [isCompiling, setIsCompiling] = useState(false);
@@ -254,10 +264,9 @@ export default function Home() {
   const activeStorage = useMemo(() => activeSnapshot?.state ?? {}, [activeSnapshot]);
   const storageContextLabel = activeSnapshot?.contextLabel ?? "Latest contract snapshot";
 
-  const appendLog = (msg: string) => setLogs((prev) => [...prev, msg]);
-
   const handleCompile = async () => {
     setIsCompiling(true);
+    clearLogs();
     setHasCompiled(false);
     setCompileSummary(undefined);
     setCompileError(null);
@@ -298,7 +307,7 @@ export default function Home() {
           }
         : null;
 
-      compileLogs.forEach((line) => appendLog(line));
+      appendLogs(compileLogs);
       setIsCompiling(false);
       setHasCompiled(true);
       appendLog("✓ Compilation successful");
@@ -514,7 +523,13 @@ export default function Home() {
           />
 
           <div className="mt-auto pt-4">
-            <Console logs={logs} />
+            <Console
+              logs={logs}
+              baseLineNumber={baseLineNumber}
+              droppedMessages={droppedMessages}
+              isIngestionPaused={isIngestionPaused}
+              onIngestionPauseChange={setIngestionPaused}
+            />
           </div>
         </section>
       </main>
