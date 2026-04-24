@@ -33,6 +33,7 @@ import MultisigWalletDashboard, {
   type MultisigTx,
   type SignerRole,
 } from "@/components/MultisigWalletDashboard";
+import AmmPoolPanel, { type PoolData } from "@/components/AmmPoolPanel";
 import { useFreighterWallet } from "@/hooks/useFreighterWallet";
 import { useTransactionTracker } from "@/hooks/useTransactionTracker";
 import {
@@ -344,6 +345,11 @@ export default function Home() {
   const [multisigTxs, setMultisigTxs] = useState<MultisigTx[]>([]);
   const [multisigThreshold, setMultisigThreshold] = useState(2);
   const [isMultisigLoading, setIsMultisigLoading] = useState(false);
+
+  // AMM pool state
+  const [ammPool, setAmmPool] = useState<PoolData | null>(null);
+  const [ammLpBalance, setAmmLpBalance] = useState(0);
+  const [isAmmLoading, setIsAmmLoading] = useState(false);
 
   const appendLog = (msg: string) => {
     setLogs((prev) => [...prev, msg]);
@@ -1454,6 +1460,105 @@ export default function Home() {
     }
   };
 
+  // ── AMM pool handlers ──────────────────────────────────────────────────────
+
+  const handleAmmSwap = async (tokenIn: "A" | "B", amountIn: number, minOut: number) => {
+    if (!contractId) return;
+    const txId = addTx(`Swap ${amountIn} Token${tokenIn}`);
+    setIsAmmLoading(true);
+    try {
+      const payload = await requestJson<{ output: string }>("/api/invoke", {
+        contractId,
+        functionName: "swap",
+        args: {
+          trader: walletAddress ?? "",
+          token_in: tokenIn === "A" ? "token_a" : "token_b",
+          amount_in: String(amountIn),
+          min_out: String(minOut),
+        },
+      });
+      const out = parseInt(payload.output ?? "0");
+      setAmmPool((prev) => {
+        if (!prev) return prev;
+        const [newRA, newRB] = tokenIn === "A"
+          ? [prev.reserveA + amountIn, prev.reserveB - out]
+          : [prev.reserveA - out, prev.reserveB + amountIn];
+        return { ...prev, reserveA: newRA, reserveB: newRB };
+      });
+      updateTx(txId, { status: "success", hash: payload.output });
+      appendLog(`[amm] Swapped ${amountIn} Token${tokenIn} → ${out}`);
+    } catch (error) {
+      updateTx(txId, { status: "error", error: formatApiError(error) });
+      appendLog(`[error] Swap failed: ${formatApiError(error)}`);
+    } finally {
+      setIsAmmLoading(false);
+    }
+  };
+
+  const handleAmmAddLiquidity = async (amountA: number, amountB: number, minLp: number) => {
+    if (!contractId) return;
+    const txId = addTx(`Add liquidity ${amountA}/${amountB}`);
+    setIsAmmLoading(true);
+    try {
+      const payload = await requestJson<{ output: string }>("/api/invoke", {
+        contractId,
+        functionName: "add_liquidity",
+        args: {
+          provider: walletAddress ?? "",
+          amount_a: String(amountA),
+          amount_b: String(amountB),
+          min_lp: String(minLp),
+        },
+      });
+      const lp = parseInt(payload.output ?? "0");
+      setAmmPool((prev) =>
+        prev
+          ? { ...prev, reserveA: prev.reserveA + amountA, reserveB: prev.reserveB + amountB, totalLp: prev.totalLp + lp }
+          : { reserveA: amountA, reserveB: amountB, totalLp: lp, tokenALabel: "TKA", tokenBLabel: "TKB", feeBps: 30, priceACum: 0, priceBCum: 0 }
+      );
+      setAmmLpBalance((prev) => prev + lp);
+      updateTx(txId, { status: "success" });
+      appendLog(`[amm] Added liquidity, minted ${lp} LP`);
+    } catch (error) {
+      updateTx(txId, { status: "error", error: formatApiError(error) });
+      appendLog(`[error] Add liquidity failed: ${formatApiError(error)}`);
+    } finally {
+      setIsAmmLoading(false);
+    }
+  };
+
+  const handleAmmRemoveLiquidity = async (lpAmount: number, minA: number, minB: number) => {
+    if (!contractId) return;
+    const txId = addTx(`Remove ${lpAmount} LP`);
+    setIsAmmLoading(true);
+    try {
+      const payload = await requestJson<{ output: string }>("/api/invoke", {
+        contractId,
+        functionName: "remove_liquidity",
+        args: {
+          provider: walletAddress ?? "",
+          lp_amount: String(lpAmount),
+          min_a: String(minA),
+          min_b: String(minB),
+        },
+      });
+      const [outA, outB] = (payload.output ?? "0,0").split(",").map(Number);
+      setAmmPool((prev) =>
+        prev
+          ? { ...prev, reserveA: prev.reserveA - outA, reserveB: prev.reserveB - outB, totalLp: prev.totalLp - lpAmount }
+          : prev
+      );
+      setAmmLpBalance((prev) => Math.max(0, prev - lpAmount));
+      updateTx(txId, { status: "success" });
+      appendLog(`[amm] Removed liquidity: ${outA} TKA + ${outB} TKB`);
+    } catch (error) {
+      updateTx(txId, { status: "error", error: formatApiError(error) });
+      appendLog(`[error] Remove liquidity failed: ${formatApiError(error)}`);
+    } finally {
+      setIsAmmLoading(false);
+    }
+  };
+
   const walletAddress = wallet.address ?? undefined;
 
   return (
@@ -1811,6 +1916,16 @@ export default function Home() {
               onApprove={handleMultisigApprove}
               onExecute={handleMultisigExecute}
               onCancel={handleMultisigCancel}
+            />
+            <AmmPoolPanel
+              contractId={contractId}
+              walletAddress={walletAddress}
+              pool={ammPool}
+              lpBalance={ammLpBalance}
+              isLoading={isAmmLoading}
+              onSwap={handleAmmSwap}
+              onAddLiquidity={handleAmmAddLiquidity}
+              onRemoveLiquidity={handleAmmRemoveLiquidity}
             />
             <TransactionStatus transactions={transactions} onClear={clearTx} />
             <Console logs={logs} />
