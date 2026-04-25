@@ -1,5 +1,6 @@
 import express from 'express';
 import redisService from '../services/redisService.js';
+import { alertManager } from '../utils/alerting.js';
 
 const router = express.Router();
 
@@ -45,6 +46,18 @@ router.put('/rate-limits', async (req, res) => {
     await redisService.client.expire(auditKey, 60 * 60 * 24 * 7); // 7 days
 
     res.json({ success: true, message: `Limit for ${endpoint} updated to ${limit}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/alerts', (req, res) => {
+  try {
+    const alerts = alertManager.getRecentAlerts();
+    res.json({
+      alerts,
+      total: alerts.length,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
