@@ -20,6 +20,7 @@ import metricsRoute, { requestLatency } from './routes/metrics.js';
 import { rateLimitMiddleware } from './middleware/rateLimiter.js';
 import oracleQueueRoute from './routes/oracleQueue.js';
 import { oracleWorkerPool } from './services/oracleWorkerPool.js';
+import migrationRoute from './routes/migration.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -77,6 +78,7 @@ app.use(rateLimitMiddleware('global'));
 app.use('/api', apiRouter);
 app.use('/api/oracle', oracleQueueRoute);
 app.use('/api/admin', adminRoute);
+app.use('/api/migrations', migrationRoute);
 app.use('/metrics', metricsRoute);
 
 // ─── Health Check Helpers ────────────────────────────────────────────────────
