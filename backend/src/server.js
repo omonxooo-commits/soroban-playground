@@ -15,6 +15,7 @@ import { startCleanupWorker } from './cleanupWorker.js';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import { setupWebsocketServer } from './websocket.js';
 import { initializeCompileService } from './services/compileService.js';
+import oracleProofQueueService from './services/oracleProofQueueService.js';
 import adminRoute from './routes/admin.js';
 import metricsRoute, { requestLatency } from './routes/metrics.js';
 import { rateLimitMiddleware } from './middleware/rateLimiter.js';
@@ -49,7 +50,7 @@ const logFormat =
 // Basic middleware
 app.use(morgan(logFormat));
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
 
 // Latency tracking middleware
 app.use((req, res, next) => {
@@ -166,9 +167,32 @@ app.use(errorHandler);
 
 setupWebsocketServer(server);
 await initializeCompileService();
+await oracleProofQueueService.startWorkers();
 startCleanupWorker();
 server.listen(PORT, () => {
   console.log(`Backend server running on http://localhost:${PORT}`);
+});
+
+async function shutdown(signal) {
+  console.log(`Received ${signal}, shutting down gracefully`);
+  await oracleProofQueueService.stopWorkers({ requeueActive: true });
+  server.close(() => {
+    process.exit(0);
+  });
+}
+
+process.on('SIGTERM', () => {
+  shutdown('SIGTERM').catch((error) => {
+    console.error('Graceful shutdown failed:', error.message);
+    process.exit(1);
+  });
+});
+
+process.on('SIGINT', () => {
+  shutdown('SIGINT').catch((error) => {
+    console.error('Graceful shutdown failed:', error.message);
+    process.exit(1);
+  });
 });
 
 export default app;

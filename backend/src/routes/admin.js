@@ -1,5 +1,6 @@
 import express from 'express';
 import redisService from '../services/redisService.js';
+import oracleProofQueueService from '../services/oracleProofQueueService.js';
 
 const router = express.Router();
 
@@ -47,6 +48,34 @@ router.put('/rate-limits', async (req, res) => {
     res.json({ success: true, message: `Limit for ${endpoint} updated to ${limit}` });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/oracle-queue', async (_req, res) => {
+  try {
+    res.json(await oracleProofQueueService.getStatus());
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+router.get('/oracle-queue/dead-letter', async (req, res) => {
+  try {
+    const tasks = await oracleProofQueueService.listDeadLetter(
+      req.query.limit || 50
+    );
+    res.json({ tasks, count: tasks.length });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+router.post('/oracle-queue/dead-letter/:id/requeue', async (req, res) => {
+  try {
+    const task = await oracleProofQueueService.requeueDeadLetter(req.params.id);
+    res.json({ success: true, task });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 });
 
