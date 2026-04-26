@@ -1,5 +1,6 @@
 import express from 'express';
 import client from 'prom-client';
+import { oracleLockRegistry } from '../services/oracle/lockMetrics.js';
 
 const router = express.Router();
 
@@ -33,7 +34,8 @@ register.registerMetric(requestLatency);
 router.get('/', async (req, res) => {
   try {
     res.set('Content-Type', register.contentType);
-    res.end(await register.metrics());
+    const merged = await client.Registry.merge([register, oracleLockRegistry]).metrics();
+    res.end(merged);
   } catch (ex) {
     res.status(500).end(ex);
   }

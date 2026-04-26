@@ -17,6 +17,7 @@ import { setupWebsocketServer } from './websocket.js';
 import { initializeCompileService } from './services/compileService.js';
 import adminRoute from './routes/admin.js';
 import metricsRoute, { requestLatency } from './routes/metrics.js';
+import oracleRoute from './routes/oracle.js';
 import { rateLimitMiddleware } from './middleware/rateLimiter.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -74,6 +75,7 @@ app.use(rateLimitMiddleware('global'));
 // Routes
 app.use('/api', apiRouter);
 app.use('/api/admin', adminRoute);
+app.use('/api/oracle', oracleRoute);
 app.use('/metrics', metricsRoute);
 
 // ─── Health Check Helpers ────────────────────────────────────────────────────
