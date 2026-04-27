@@ -86,4 +86,27 @@ impl Database for PostgresDatabase {
         sqlx::query("SELECT 1").execute(&self.pool).await?;
         Ok(())
     }
+
+    async fn get_recent_events(&self, limit: usize) -> Result<Vec<Event>> {
+        let limit = limit as i64;
+        let rows = sqlx::query!(
+            "SELECT id, contract_id, ledger, ledger_closed_at, event_type, data \
+             FROM events ORDER BY ledger DESC LIMIT $1",
+            limit
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| Event {
+                id: r.id,
+                contract_id: r.contract_id,
+                ledger: r.ledger as u32,
+                ledger_closed_at: r.ledger_closed_at,
+                event_type: r.event_type,
+                data: r.data,
+            })
+            .collect())
+    }
 }

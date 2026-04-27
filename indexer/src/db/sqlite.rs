@@ -70,4 +70,17 @@ impl Database for SqliteDatabase {
         sqlx::query("SELECT 1").execute(&self.pool).await?;
         Ok(())
     }
+
+    async fn get_recent_events(&self, limit: usize) -> Result<Vec<Event>> {
+        let limit = limit as i64;
+        let res = sqlx::query_as!(
+            Event,
+            "SELECT id, contract_id, ledger, ledger_closed_at, event_type, data \
+             FROM events ORDER BY ledger DESC LIMIT ?",
+            limit
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(res)
+    }
 }

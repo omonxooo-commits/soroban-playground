@@ -19,4 +19,7 @@ pub trait Database: Send + Sync {
     async fn get_event(&self, id: &str) -> Result<Option<Event>>;
     async fn get_events_by_contract(&self, contract_id: &str, limit: usize) -> Result<Vec<Event>>;
     async fn health_check(&self) -> Result<()>;
+    /// Return the most recent `limit` events ordered by ledger DESC.
+    /// Used to replay recent history to newly-connected WebSocket clients.
+    async fn get_recent_events(&self, limit: usize) -> Result<Vec<Event>>;
 }
