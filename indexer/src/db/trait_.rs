@@ -42,6 +42,18 @@ pub struct Oracle {
     pub active: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AuditEntry {
+    pub id: String,
+    pub event_type: String,
+    pub actor: String,
+    pub payload: String,
+    pub prev_hash: String,
+    pub entry_hash: String,
+    pub merkle_root: String,
+    pub timestamp: String,
+}
+
 #[async_trait]
 pub trait Database: Send + Sync {
     // Event methods
@@ -66,5 +78,12 @@ pub trait Database: Send + Sync {
     async fn get_oracle(&self, id: &str) -> Result<Option<Oracle>>;
     async fn update_oracle_reputation(&self, id: &str, change: i32) -> Result<()>;
     async fn get_all_oracles(&self) -> Result<Vec<Oracle>>;
+
+    // Audit methods
+    async fn save_audit_entry(&self, entry: &AuditEntry) -> Result<()>;
+    async fn get_audit_trail(&self, limit: usize, offset: usize) -> Result<Vec<AuditEntry>>;
+    async fn get_last_audit_entry(&self) -> Result<Option<AuditEntry>>;
+    async fn get_audit_entry(&self, id: &str) -> Result<Option<AuditEntry>>;
 }
+
 

@@ -1,4 +1,4 @@
-use crate::db::trait_::{Database, Event, Quorum, Vote, Oracle};
+use crate::db::trait_::{Database, Event, Quorum, Vote, Oracle, AuditEntry};
 use async_trait::async_trait;
 use anyhow::{Result, Context};
 use sqlx::sqlite::SqlitePool;
@@ -200,5 +200,61 @@ impl Database for SqliteDatabase {
         .await?;
         Ok(res)
     }
+
+    // ── Audit methods ─────────────────────────────────────────────────────────
+
+    async fn save_audit_entry(&self, entry: &AuditEntry) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO audit_trail (id, event_type, actor, payload, prev_hash, entry_hash, merkle_root, timestamp) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&entry.id)
+        .bind(&entry.event_type)
+        .bind(&entry.actor)
+        .bind(&entry.payload)
+        .bind(&entry.prev_hash)
+        .bind(&entry.entry_hash)
+        .bind(&entry.merkle_root)
+        .bind(&entry.timestamp)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_audit_trail(&self, limit: usize, offset: usize) -> Result<Vec<AuditEntry>> {
+        let limit = limit as i64;
+        let offset = offset as i64;
+        let res = sqlx::query_as::<_, AuditEntry>(
+            "SELECT id, event_type, actor, payload, prev_hash, entry_hash, merkle_root, timestamp 
+             FROM audit_trail ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(res)
+    }
+
+    async fn get_last_audit_entry(&self) -> Result<Option<AuditEntry>> {
+        let res = sqlx::query_as::<_, AuditEntry>(
+            "SELECT id, event_type, actor, payload, prev_hash, entry_hash, merkle_root, timestamp 
+             FROM audit_trail ORDER BY timestamp DESC LIMIT 1"
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(res)
+    }
+
+    async fn get_audit_entry(&self, id: &str) -> Result<Option<AuditEntry>> {
+        let res = sqlx::query_as::<_, AuditEntry>(
+            "SELECT id, event_type, actor, payload, prev_hash, entry_hash, merkle_root, timestamp 
+             FROM audit_trail WHERE id = ?"
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(res)
+    }
 }
+
 

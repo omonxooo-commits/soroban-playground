@@ -1,6 +1,7 @@
 mod db;
 mod ws;
 mod quorum;
+mod audit;
 
 use anyhow::Result;
 use axum::{routing::get, Router};
@@ -9,7 +10,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 use tracing::info;
-use ws::{health_handler, ws_handler, post_vote, get_quorum, get_oracles, AppState, BROADCAST_CAPACITY};
+use ws::{health_handler, ws_handler, post_vote, get_quorum, get_oracles, post_audit_log, get_audit_trail, verify_audit, AppState, BROADCAST_CAPACITY};
 
 // ── DualWriter ────────────────────────────────────────────────────────────────
 
@@ -111,7 +112,7 @@ async fn main() -> Result<()> {
         .unwrap_or(3001);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], ws_port));
-    let app_state = AppState::new(primary.clone(), tx.clone());
+    let app_state = AppState::new(primary.clone(), tx.clone()).await?;
 
     let app = Router::new()
         .route("/ws/events", get(ws_handler))
@@ -119,6 +120,9 @@ async fn main() -> Result<()> {
         .route("/api/quorums/:id", get(get_quorum))
         .route("/api/quorums/:id/vote", axum::routing::post(post_vote))
         .route("/api/oracles", get(get_oracles))
+        .route("/api/audit", get(get_audit_trail))
+        .route("/api/audit/log", axum::routing::post(post_audit_log))
+        .route("/api/audit/verify", axum::routing::post(verify_audit))
         .layer(CorsLayer::permissive()) // tighten to specific origins in production
         .with_state(app_state);
 

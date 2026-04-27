@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
-use crate::db::{Database, Event, Quorum};
+use crate::db::{Database, Event, Quorum, AuditEntry};
 
 #[derive(Debug, Serialize)]
 pub struct QuorumUpdate {
@@ -44,17 +44,20 @@ pub struct AppState {
     pub broadcaster: broadcast::Sender<Event>,
     pub connection_count: AtomicUsize,
     pub quorum_manager: Arc<crate::quorum::QuorumManager>,
+    pub audit_manager: Arc<crate::audit::AuditManager>,
 }
 
 impl AppState {
-    pub fn new(db: Arc<dyn Database>, broadcaster: broadcast::Sender<Event>) -> Arc<Self> {
+    pub async fn new(db: Arc<dyn Database>, broadcaster: broadcast::Sender<Event>) -> Result<Arc<Self>> {
         let quorum_manager = Arc::new(crate::quorum::QuorumManager::new(db.clone()));
-        Arc::new(Self {
+        let audit_manager = Arc::new(crate::audit::AuditManager::new(db.clone()).await?);
+        Ok(Arc::new(Self {
             db,
             broadcaster,
             connection_count: AtomicUsize::new(0),
             quorum_manager,
-        })
+            audit_manager,
+        }))
     }
 }
 
@@ -153,6 +156,47 @@ pub async fn get_oracles(
 ) -> impl IntoResponse {
     match state.db.get_all_oracles().await {
         Ok(oracles) => axum::Json(serde_json::json!({ "success": true, "data": oracles })).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "success": false, "error": e.to_string() }))).into_response(),
+    }
+}
+
+// ── Audit Handlers ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct AuditLogRequest {
+    pub event_type: String,
+    pub actor: String,
+    pub payload: String,
+}
+
+pub async fn post_audit_log(
+    State(state): State<Arc<AppState>>,
+    axum::Json(payload): axum::Json<AuditLogRequest>,
+) -> impl IntoResponse {
+    match state.audit_manager.log_event(&payload.event_type, &payload.actor, &payload.payload).await {
+        Ok(entry) => axum::Json(serde_json::json!({ "success": true, "data": entry })).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "success": false, "error": e.to_string() }))).into_response(),
+    }
+}
+
+pub async fn get_audit_trail(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let limit = params.get("limit").and_then(|l| l.parse::<usize>().ok()).unwrap_or(50);
+    let offset = params.get("offset").and_then(|o| o.parse::<usize>().ok()).unwrap_or(0);
+
+    match state.db.get_audit_trail(limit, offset).await {
+        Ok(trail) => axum::Json(serde_json::json!({ "success": true, "data": trail })).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "success": false, "error": e.to_string() }))).into_response(),
+    }
+}
+
+pub async fn verify_audit(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.audit_manager.verify_integrity().await {
+        Ok(is_valid) => axum::Json(serde_json::json!({ "success": true, "is_valid": is_valid })).into_response(),
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "success": false, "error": e.to_string() }))).into_response(),
     }
 }
