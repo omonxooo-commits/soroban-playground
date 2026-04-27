@@ -18,6 +18,7 @@ import { initializeCompileService } from './services/compileService.js';
 import oracleProofQueueService from './services/oracleProofQueueService.js';
 import adminRoute from './routes/admin.js';
 import metricsRoute, { requestLatency } from './routes/metrics.js';
+import oracleRoute from './routes/oracle.js';
 import { rateLimitMiddleware } from './middleware/rateLimiter.js';
 import auditLogger from './middleware/auditLogger.js';
 
@@ -94,6 +95,7 @@ app.use(rateLimitMiddleware('global'));
 // Routes
 app.use('/api', apiRouter);
 app.use('/api/admin', adminRoute);
+app.use('/api/oracle', oracleRoute);
 app.use('/metrics', metricsRoute);
 
 // ─── Health Check Helpers ────────────────────────────────────────────────────

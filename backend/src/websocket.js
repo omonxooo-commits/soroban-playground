@@ -4,6 +4,7 @@ import { deployProgressBus } from './services/deployService.js';
 import { compileProgressBus } from './services/compileService.js';
 import oracleProofQueueService from './services/oracleProofQueueService.js';
 import redisService from './services/redisService.js';
+import { sharedOracleEventBus } from './services/oracle/oracleEvents.js';
 
 const clients = new Set();
 
@@ -54,6 +55,15 @@ export function setupWebsocketServer(httpServer) {
   deployProgressBus.on('progress', forward('deploy-progress'));
   compileProgressBus.on('progress', forward('compile-progress'));
   oracleProofQueueService.on('progress', forward('oracle-proof-progress'));
+
+  // Forward every oracle lifecycle event under a single ws message type
+  // so the frontend can subscribe with one handler.
+  sharedOracleEventBus.on('*', (payload) => {
+    const message = JSON.stringify({ type: 'oracle-event', ...payload });
+    for (const socket of clients) {
+      if (socket.readyState === socket.OPEN) socket.send(message);
+    }
+  });
 
   // Broadcast analytics every 2 seconds
   setInterval(async () => {
