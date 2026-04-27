@@ -1,20 +1,6 @@
 import express from 'express';
 import redisService from '../services/redisService.js';
-import { alertManager } from '../utils/alerting.js';
-import {
-  invalidateCache,
-  warmCache,
-  listCacheKeys,
-  getCacheAdminSnapshot,
-  bumpCacheVersion,
-} from '../services/cacheService.js';
-import {
-  getMigrationDashboard,
-  validateMigrations,
-  applyPendingMigrations,
-  rollbackMigration,
-  applyMigration,
-} from '../services/migrationService.js';
+import oracleProofQueueService from '../services/oracleProofQueueService.js';
 
 const router = express.Router();
 
@@ -65,23 +51,31 @@ router.put('/rate-limits', async (req, res) => {
   }
 });
 
-router.get('/db-status', async (req, res) => {
+router.get('/oracle-queue', async (_req, res) => {
   try {
-    const dbType = process.env.DB_TYPE || 'sqlite';
-    const dbUrl = process.env.DATABASE_URL || 'ephemeral';
-    
-    // Simulate health check for current backend DB (even if mocking for now)
-    const isHealthy = true; // In production: await db.ping()
-    
-    res.json({
-      status: isHealthy ? 'healthy' : 'unhealthy',
-      type: dbType,
-      url: dbUrl.replace(/:[^:@/]+@/, ':***@'), // Mask password
-      dualWrite: !!process.env.SECONDARY_DATABASE_URL,
-      timestamp: new Date().toISOString()
-    });
+    res.json(await oracleProofQueueService.getStatus());
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+router.get('/oracle-queue/dead-letter', async (req, res) => {
+  try {
+    const tasks = await oracleProofQueueService.listDeadLetter(
+      req.query.limit || 50
+    );
+    res.json({ tasks, count: tasks.length });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ error: err.message });
+  }
+});
+
+router.post('/oracle-queue/dead-letter/:id/requeue', async (req, res) => {
+  try {
+    const task = await oracleProofQueueService.requeueDeadLetter(req.params.id);
+    res.json({ success: true, task });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 });
 

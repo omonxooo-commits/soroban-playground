@@ -14,9 +14,8 @@ import apiRouter from './routes/api.js';
 import { startCleanupWorker } from './cleanupWorker.js';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import { setupWebsocketServer } from './websocket.js';
-import { initializeTracing } from './tracing.js';
-import { initializeMetrics } from './metrics/performance.js';
-import { getCurrentSpan, setSpanAttributes } from './utils/tracing.js';
+import { initializeCompileService } from './services/compileService.js';
+import oracleProofQueueService from './services/oracleProofQueueService.js';
 import adminRoute from './routes/admin.js';
 import metricsRoute, { requestLatency } from './routes/metrics.js';
 import { rateLimitMiddleware } from './middleware/rateLimiter.js';
@@ -56,50 +55,7 @@ morgan.token('traceId', (req) => req.traceId || '-');
 // Basic middleware
 app.use(morgan(logFormat));
 app.use(cors());
-app.use(express.json());
-app.use(auditLogger);
-
-// Trace context middleware
-app.use(async (req, res, next) => {
-  if (config.tracing.enabled) {
-    const { trace, getTraceId } = await import('./utils/tracing.js');
-    const tracer = trace.getTracer(config.tracing.serviceName, config.tracing.serviceVersion);
-    
-    // Extract trace context from headers
-    const traceId = req.headers['x-trace-id'] || req.headers['x-request-id'];
-    const spanId = req.headers['x-span-id'];
-    const traceFlags = req.headers['x-trace-flags'];
-    
-    let span;
-    if (traceId) {
-      // Continue existing trace
-      const spanContext = {
-        traceId,
-        spanId: spanId || '0000000000000000',
-        traceFlags: traceFlags ? parseInt(traceFlags, 10) : 1,
-        isRemote: true,
-      };
-      span = tracer.startSpan(`HTTP ${req.method} ${req.path}`, {}, spanContext);
-    } else {
-      // Start new trace
-      span = tracer.startSpan(`HTTP ${req.method} ${req.path}`);
-    }
-    
-    // Set trace ID in response headers
-    const context = span.spanContext();
-    res.setHeader('x-trace-id', context.traceId);
-    
-    // Store span in request for later use
-    req.traceSpan = span;
-    req.traceId = context.traceId;
-    
-    // End span when response finishes
-    res.on('finish', () => {
-      span.end();
-    });
-  }
-  next();
-});
+app.use(express.json({ limit: '5mb' }));
 
 // Latency tracking middleware
 app.use((req, res, next) => {
@@ -233,13 +189,34 @@ app.use(errorHandler);
 
 setupWebsocketServer(server);
 await initializeCompileService();
-await initializeTracing();
-await initializeMetrics();
+await oracleProofQueueService.startWorkers();
 startCleanupWorker();
 if (process.env.NODE_ENV !== 'test') {
   server.listen(PORT, () => {
     console.log(`Backend server running on http://localhost:${PORT}`);
   });
 }
+
+async function shutdown(signal) {
+  console.log(`Received ${signal}, shutting down gracefully`);
+  await oracleProofQueueService.stopWorkers({ requeueActive: true });
+  server.close(() => {
+    process.exit(0);
+  });
+}
+
+process.on('SIGTERM', () => {
+  shutdown('SIGTERM').catch((error) => {
+    console.error('Graceful shutdown failed:', error.message);
+    process.exit(1);
+  });
+});
+
+process.on('SIGINT', () => {
+  shutdown('SIGINT').catch((error) => {
+    console.error('Graceful shutdown failed:', error.message);
+    process.exit(1);
+  });
+});
 
 export default app;

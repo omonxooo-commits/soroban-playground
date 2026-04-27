@@ -2,6 +2,7 @@ import { WebSocketServer } from 'ws';
 import { invokeProgressBus } from './services/invokeService.js';
 import { deployProgressBus } from './services/deployService.js';
 import { compileProgressBus } from './services/compileService.js';
+import oracleProofQueueService from './services/oracleProofQueueService.js';
 import redisService from './services/redisService.js';
 
 const clients = new Set();
@@ -52,6 +53,7 @@ export function setupWebsocketServer(httpServer) {
   invokeProgressBus.on('progress', forward('invoke-progress'));
   deployProgressBus.on('progress', forward('deploy-progress'));
   compileProgressBus.on('progress', forward('compile-progress'));
+  oracleProofQueueService.on('progress', forward('oracle-proof-progress'));
 
   // Broadcast analytics every 2 seconds
   setInterval(async () => {
