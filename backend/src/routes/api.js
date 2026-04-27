@@ -5,7 +5,7 @@ import v1Invoke from './v1/invoke.js';
 import v2Compile from './v2/compile.js';
 import v2Deploy from './v2/deploy.js';
 import v2Invoke from './v2/invoke.js';
-import oracleRouter from './oracle.js';
+import eventsRouter from './events.js';
 import { versionTransformer, requestTransformerV2 } from '../middleware/versionTransformer.js';
 import { rateLimitMiddleware } from '../middleware/rateLimiter.js';
 
@@ -49,5 +49,6 @@ router.use('/oracle', oracleRouter);
 router.use('/compile', versionTransformer('v1'), rateLimitMiddleware('compile'), v1Compile);
 router.use('/deploy', versionTransformer('v1'), rateLimitMiddleware('deploy'), v1Deploy);
 router.use('/invoke', versionTransformer('v1'), rateLimitMiddleware('invoke'), v1Invoke);
+router.use('/events', eventsRouter);
 
 export default router;

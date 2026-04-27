@@ -71,55 +71,39 @@ export const requestLatency = new client.Histogram({
 });
 register.registerMetric(requestLatency);
 
-export const oracleProofTasksEnqueued = new client.Counter({
-  name: 'oracle_proof_tasks_enqueued_total',
-  help: 'Total oracle proof tasks accepted by the producer API',
-  labelNames: ['priority']
+export const eventValidationTotal = new client.Counter({
+  name: 'event_validation_total',
+  help: 'Total number of event validations by event type, schema version, and outcome',
+  labelNames: ['event_type', 'schema_version', 'outcome']
 });
-register.registerMetric(oracleProofTasksEnqueued);
+register.registerMetric(eventValidationTotal);
 
-export const oracleProofTaskTransitions = new client.Counter({
-  name: 'oracle_proof_task_transitions_total',
-  help: 'Oracle proof task state transitions',
-  labelNames: ['from_state', 'to_state']
+export const eventSchemaVersionEventsTotal = new client.Counter({
+  name: 'event_schema_version_events_total',
+  help: 'Accepted events by event type and schema version',
+  labelNames: ['event_type', 'schema_version']
 });
-register.registerMetric(oracleProofTaskTransitions);
+register.registerMetric(eventSchemaVersionEventsTotal);
 
-export const oracleProofTaskRetries = new client.Counter({
-  name: 'oracle_proof_task_retries_total',
-  help: 'Oracle proof task retry attempts scheduled after worker failures',
-  labelNames: ['reason']
+export const eventQuarantineSize = new client.Gauge({
+  name: 'event_quarantine_open_items',
+  help: 'Number of open quarantined events awaiting review'
 });
-register.registerMetric(oracleProofTaskRetries);
+register.registerMetric(eventQuarantineSize);
 
-export const oracleProofDeadLetterTotal = new client.Counter({
-  name: 'oracle_proof_dead_letter_total',
-  help: 'Oracle proof tasks moved to the dead letter queue',
-  labelNames: ['reason']
+export const eventSchemaBreakingChangesTotal = new client.Counter({
+  name: 'event_schema_breaking_changes_total',
+  help: 'Detected or rejected breaking schema changes by event type',
+  labelNames: ['event_type']
 });
-register.registerMetric(oracleProofDeadLetterTotal);
+register.registerMetric(eventSchemaBreakingChangesTotal);
 
-export const oracleProofQueueDepth = new client.Gauge({
-  name: 'oracle_proof_queue_depth',
-  help: 'Oracle proof task count by queue state',
-  labelNames: ['state']
+export const eventSchemaDetectionAlertsTotal = new client.Counter({
+  name: 'event_schema_detection_alerts_total',
+  help: 'Automated schema detection alerts by event type and severity',
+  labelNames: ['event_type', 'severity']
 });
-register.registerMetric(oracleProofQueueDepth);
-
-export const oracleProofProcessingDuration = new client.Histogram({
-  name: 'oracle_proof_processing_duration_seconds',
-  help: 'Oracle proof task processing duration',
-  labelNames: ['outcome'],
-  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10]
-});
-register.registerMetric(oracleProofProcessingDuration);
-
-export const oracleProofWorkerHeartbeats = new client.Counter({
-  name: 'oracle_proof_worker_heartbeats_total',
-  help: 'Heartbeat writes from oracle proof workers',
-  labelNames: ['worker_id']
-});
-register.registerMetric(oracleProofWorkerHeartbeats);
+register.registerMetric(eventSchemaDetectionAlertsTotal);
 
 router.get('/', async (req, res) => {
   try {
