@@ -33,6 +33,7 @@ import { oracleWorkerPool } from './services/oracleWorkerPool.js';
 import migrationRoute from './routes/migration.js';
 import sportsPredictionMarketRoute from './routes/sportsPredictionMarket.js';
 import warrantyManagementRoute from './routes/warrantyManagement.js';
+import yieldOptimizerRoute from './routes/yieldOptimizer.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -155,6 +156,7 @@ app.use('/api/admin', adminRoute);
 app.use('/api/migrations', migrationRoute);
 app.use('/api/sports-markets', sportsPredictionMarketRoute);
 app.use('/api/warranty', warrantyManagementRoute);
+app.use('/api/yield-optimizer', yieldOptimizerRoute);
 app.use('/metrics', metricsRoute);
 
 // GraphQL — mounted at /graphql (GraphiQL playground available at GET /graphql)
