@@ -2,7 +2,7 @@
 name = "soroban-yield-optimizer"
 version = "0.1.0"
 edition = "2021"
-description = "Cross-protocol yield optimizer with auto-compounding and strategy backtesting on Soroban"
+description = "Cross-protocol yield optimizer with auto-compounding and strategy controls"
 
 [lib]
 crate-type = ["cdylib"]

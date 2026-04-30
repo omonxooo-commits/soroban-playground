@@ -1,155 +1,129 @@
-// Copyright (c) 2026 StellarDevTools
-// SPDX-License-Identifier: MIT
-
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger as _},
+    Address, Env, String,
+};
 
-use crate::{YieldOptimizerContract, YieldOptimizerContractClient};
+use crate::{YieldOptimizer, YieldOptimizerClient};
+use crate::types::Error;
 
-fn setup() -> (Env, Address, YieldOptimizerContractClient<'static>) {
+fn setup() -> (Env, Address, Address, YieldOptimizerClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
-    let id = env.register_contract(None, YieldOptimizerContract);
-    let client = YieldOptimizerContractClient::new(&env, &id);
+    let contract_id = env.register_contract(None, YieldOptimizer);
+    let client = YieldOptimizerClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    (env, admin, client)
+    let executor = Address::generate(&env);
+    client.initialize(&admin, &executor);
+    (env, admin, executor, client)
+}
+
+fn add_strategy(env: &Env, client: &YieldOptimizerClient, admin: &Address) -> u32 {
+    client.create_strategy(
+        admin,
+        &String::from_str(env, "Delta Neutral Vault"),
+        &String::from_str(env, "Blend Capital + Wave AMM"),
+        &1200,
+        &300,
+        &86_400,
+    )
 }
 
 #[test]
-fn test_initialize() {
-    let (_env, admin, client) = setup();
-    client.initialize(&admin);
-    assert!(client.is_initialized());
-    assert!(!client.is_paused());
-    assert_eq!(client.vault_count(), 0);
-    assert_eq!(client.protocol_count(), 0);
+fn test_create_strategy_stores_data() {
+    let (env, admin, _executor, client) = setup();
+    let strategy_id = add_strategy(&env, &client, &admin);
+    let strategy = client.get_strategy(&strategy_id);
+
+    assert_eq!(strategy.name, String::from_str(&env, "Delta Neutral Vault"));
+    assert_eq!(strategy.apy_bps, 1200);
+    assert_eq!(strategy.fee_bps, 300);
+    assert!(strategy.is_active);
 }
 
 #[test]
-#[should_panic]
-fn test_double_initialize_fails() {
-    let (_env, admin, client) = setup();
-    client.initialize(&admin);
-    client.initialize(&admin);
-}
-
-#[test]
-fn test_add_protocol_and_create_vault() {
-    let (env, admin, client) = setup();
-    client.initialize(&admin);
-    let pid = client.add_protocol(&admin, &String::from_str(&env, "AMM Pool"), &800);
-    assert_eq!(pid, 1);
-    let vid = client.create_vault(&admin, &String::from_str(&env, "Optimizer Vault A"), &pid);
-    assert_eq!(vid, 1);
-    let vault = client.get_vault(&vid);
-    assert_eq!(vault.current_apy_bps, 800);
-    assert!(vault.is_active);
-}
-
-#[test]
-fn test_deposit_and_withdraw() {
-    let (env, admin, client) = setup();
-    client.initialize(&admin);
-    let pid = client.add_protocol(&admin, &String::from_str(&env, "Lending Pool"), &500);
-    let vid = client.create_vault(&admin, &String::from_str(&env, "Vault B"), &pid);
-
+fn test_deposit_tracks_shares_and_balance() {
+    let (env, admin, _executor, client) = setup();
+    let strategy_id = add_strategy(&env, &client, &admin);
     let user = Address::generate(&env);
-    let bal = client.deposit(&user, &vid, &1_000_000);
-    assert_eq!(bal, 1_000_000);
 
-    let pos = client.get_position(&user, &vid);
-    assert_eq!(pos.deposited, 1_000_000);
+    let shares = client.deposit(&user, &strategy_id, &5_000_000);
+    let position = client.get_position(&user, &strategy_id);
+    let strategy = client.get_strategy(&strategy_id);
 
-    let withdrawn = client.withdraw(&user, &vid, &500_000);
-    assert_eq!(withdrawn, 500_000);
-
-    let pos2 = client.get_position(&user, &vid);
-    assert_eq!(pos2.compounded_balance, 500_000);
+    assert_eq!(shares, 5_000_000);
+    assert_eq!(position.shares, 5_000_000);
+    assert_eq!(position.current_balance, 5_000_000);
+    assert_eq!(strategy.total_deposited, 5_000_000);
+    assert_eq!(strategy.total_shares, 5_000_000);
 }
 
 #[test]
-fn test_compound_increases_tvl() {
-    let (env, admin, client) = setup();
-    client.initialize(&admin);
-    let pid = client.add_protocol(&admin, &String::from_str(&env, "DEX"), &1000);
-    let vid = client.create_vault(&admin, &String::from_str(&env, "Vault C"), &pid);
-
+fn test_withdraw_reduces_value() {
+    let (env, admin, _executor, client) = setup();
+    let strategy_id = add_strategy(&env, &client, &admin);
     let user = Address::generate(&env);
-    client.deposit(&user, &vid, &10_000_000);
 
-    // Advance ledger time by ~1 year
-    env.ledger().with_mut(|l| l.timestamp += 31_536_000);
+    client.deposit(&user, &strategy_id, &10_000_000);
+    client.withdraw(&user, &strategy_id, &4_000_000);
 
-    let rewards = client.compound(&vid);
-    assert!(rewards > 0);
-
-    let vault = client.get_vault(&vid);
-    assert!(vault.total_deposited > 10_000_000);
-    assert!(vault.total_compounded > 0);
+    let position = client.get_position(&user, &strategy_id);
+    assert_eq!(position.current_balance, 6_000_000);
 }
 
 #[test]
-fn test_rebalance_vault() {
-    let (env, admin, client) = setup();
-    client.initialize(&admin);
-    let p1 = client.add_protocol(&admin, &String::from_str(&env, "Protocol A"), &400);
-    let p2 = client.add_protocol(&admin, &String::from_str(&env, "Protocol B"), &900);
-    let vid = client.create_vault(&admin, &String::from_str(&env, "Vault D"), &p1);
-
-    client.rebalance_vault(&admin, &vid, &p2);
-    let vault = client.get_vault(&vid);
-    assert_eq!(vault.protocol_id, p2);
-    assert_eq!(vault.current_apy_bps, 900);
-}
-
-#[test]
-fn test_backtest_snapshot() {
-    let (env, admin, client) = setup();
-    client.initialize(&admin);
-    let pid = client.add_protocol(&admin, &String::from_str(&env, "Staking"), &600);
-    let vid = client.create_vault(&admin, &String::from_str(&env, "Vault E"), &pid);
-
+fn test_compound_by_executor_increases_tvl() {
+    let (env, admin, executor, client) = setup();
+    let strategy_id = add_strategy(&env, &client, &admin);
     let user = Address::generate(&env);
-    client.deposit(&user, &vid, &5_000_000);
+    client.deposit(&user, &strategy_id, &10_000_000);
 
-    let bt_id = client.record_backtest(&admin, &vid);
-    assert_eq!(bt_id, 1);
-    let bt = client.get_backtest(&bt_id);
-    assert_eq!(bt.vault_id, vid);
-    assert_eq!(bt.apy_bps, 600);
-    assert_eq!(bt.tvl, 5_000_000);
+    env.ledger().with_mut(|ledger| ledger.timestamp += 172_800);
+
+    let new_tvl = client.compound(&executor, &strategy_id);
+    assert!(new_tvl > 10_000_000);
+    assert!(client.get_position(&user, &strategy_id).current_balance > 10_000_000);
 }
 
 #[test]
-fn test_pause_blocks_deposits() {
-    let (env, admin, client) = setup();
-    client.initialize(&admin);
-    let pid = client.add_protocol(&admin, &String::from_str(&env, "P"), &300);
-    let vid = client.create_vault(&admin, &String::from_str(&env, "V"), &pid);
+fn test_unauthorized_compound_fails() {
+    let (env, admin, _executor, client) = setup();
+    let strategy_id = add_strategy(&env, &client, &admin);
+    let stranger = Address::generate(&env);
+
+    env.ledger().with_mut(|ledger| ledger.timestamp += 172_800);
+    let result = client.try_compound(&stranger, &strategy_id);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_pause_blocks_deposit() {
+    let (env, admin, _executor, client) = setup();
+    let strategy_id = add_strategy(&env, &client, &admin);
+    let user = Address::generate(&env);
 
     client.pause(&admin);
-    assert!(client.is_paused());
-
-    let user = Address::generate(&env);
-    assert!(client.try_deposit(&user, &vid, &1_000_000).is_err());
-
-    client.unpause(&admin);
-    assert!(client.deposit(&user, &vid, &1_000_000) > 0);
+    let result = client.try_deposit(&user, &strategy_id, &1_000_000);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
 }
 
 #[test]
-fn test_estimated_balance_grows_over_time() {
-    let (env, admin, client) = setup();
-    client.initialize(&admin);
-    let pid = client.add_protocol(&admin, &String::from_str(&env, "Yield"), &2000);
-    let vid = client.create_vault(&admin, &String::from_str(&env, "V"), &pid);
+fn test_only_admin_can_pause() {
+    let (env, _admin, _executor, client) = setup();
+    let stranger = Address::generate(&env);
 
+    let result = client.try_pause(&stranger);
+    assert_eq!(result, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn test_compound_too_soon_fails() {
+    let (env, admin, executor, client) = setup();
+    let strategy_id = add_strategy(&env, &client, &admin);
     let user = Address::generate(&env);
-    client.deposit(&user, &vid, &1_000_000);
+    client.deposit(&user, &strategy_id, &1_000_000);
 
-    env.ledger().with_mut(|l| l.timestamp += 15_768_000); // ~6 months
-
-    let est = client.estimated_balance(&user, &vid);
-    assert!(est > 1_000_000);
+    let result = client.try_compound(&executor, &strategy_id);
+    assert_eq!(result, Err(Ok(Error::CompoundTooSoon)));
 }

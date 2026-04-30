@@ -8,6 +8,15 @@ import { sharedOracleEventBus } from './services/oracle/oracleEvents.js';
 
 const clients = new Set();
 
+export function broadcastTreasuryEvent(event) {
+  const message = JSON.stringify({ type: 'treasury-event', ...event });
+  for (const socket of clients) {
+    if (socket.readyState === socket.OPEN) {
+      socket.send(message);
+    }
+  }
+}
+
 export function setupWebsocketServer(httpServer) {
   const wss = new WebSocketServer({
     server: httpServer,
@@ -97,3 +106,13 @@ export function setupWebsocketServer(httpServer) {
 
   return wss;
 }
+
+export function broadcast(payload) {
+  const message = JSON.stringify(payload);
+  for (const socket of clients) {
+    if (socket.readyState === socket.OPEN) {
+      socket.send(message);
+    }
+  }
+}
+

@@ -1,378 +1,390 @@
-// Copyright (c) 2026 StellarDevTools
-// SPDX-License-Identifier: MIT
-
-//! # Cross-Protocol Yield Optimizer with Auto-Compounding
-//!
-//! - Protocol registry: admin registers external yield protocols with base APY.
-//! - Vaults: each vault routes deposits to one protocol; admin can rebalance.
-//! - Deposits / withdrawals: users deposit into vaults and withdraw at any time.
-//! - Auto-compounding: anyone can trigger compound on a vault; rewards are
-//!   reinvested pro-rata into all depositors' compounded balances.
-//! - Backtesting snapshots: admin records APY/TVL snapshots for strategy analysis.
-//! - Emergency pause: halts all user-facing mutations.
-
 #![no_std]
 
 mod storage;
 mod test;
 mod types;
 
-use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, String};
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, String, Vec};
 
 use crate::storage::{
-    get_admin, get_backtest, get_backtest_count, get_position, get_protocol, get_protocol_count,
-    get_vault, get_vault_count, has_position, has_protocol, has_vault, is_initialized, is_paused,
-    remove_position, set_admin, set_backtest, set_backtest_count, set_paused, set_position,
-    set_protocol, set_protocol_count, set_vault, set_vault_count,
+    get_admin, get_executor, get_position, get_strategy, get_strategy_count, has_position,
+    has_strategy, is_initialized, is_paused, remove_position, set_admin, set_executor,
+    set_paused, set_position, set_strategy, set_strategy_count,
 };
-use crate::types::{BacktestEntry, Error, Position, Protocol, Vault};
+use crate::types::{Error, Position, PositionView, Strategy};
 
 const SECONDS_PER_YEAR: u64 = 31_536_000;
 const BPS_DENOM: u32 = 10_000;
-const MAX_APY_BPS: u32 = 50_000; // 500% max
+const MAX_APY_BPS: u32 = 20_000;
+const MAX_FEE_BPS: u32 = 2_500;
 
 #[contract]
-pub struct YieldOptimizerContract;
+pub struct YieldOptimizer;
 
 #[contractimpl]
-impl YieldOptimizerContract {
-    // ── Init ──────────────────────────────────────────────────────────────────
-
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
+impl YieldOptimizer {
+    pub fn initialize(env: Env, admin: Address, executor: Address) -> Result<(), Error> {
         if is_initialized(&env) {
             return Err(Error::AlreadyInitialized);
         }
         admin.require_auth();
         set_admin(&env, &admin);
-        set_protocol_count(&env, 0);
-        set_vault_count(&env, 0);
-        set_backtest_count(&env, 0);
+        set_executor(&env, &executor);
+        set_strategy_count(&env, 0);
         set_paused(&env, false);
-        env.events().publish((symbol_short!("init"),), admin);
+
+        env.events()
+            .publish((symbol_short!("init"),), (admin, executor));
+
         Ok(())
     }
 
-    // ── Admin: protocols ──────────────────────────────────────────────────────
-
-    /// Register a new external yield protocol. Returns protocol ID.
-    pub fn add_protocol(
+    pub fn create_strategy(
         env: Env,
         admin: Address,
         name: String,
-        base_apy_bps: u32,
+        protocol: String,
+        apy_bps: u32,
+        fee_bps: u32,
+        compound_interval: u64,
     ) -> Result<u32, Error> {
         Self::assert_admin(&env, &admin)?;
-        if name.len() == 0 {
-            return Err(Error::EmptyName);
-        }
-        if base_apy_bps > MAX_APY_BPS {
-            return Err(Error::InvalidApy);
-        }
-        let id = get_protocol_count(&env) + 1;
-        set_protocol(&env, id, &Protocol { name, base_apy_bps, is_active: true });
-        set_protocol_count(&env, id);
-        env.events().publish((symbol_short!("proto_add"), id), base_apy_bps);
-        Ok(id)
-    }
+        Self::assert_strategy_params(&name, &protocol, apy_bps, fee_bps, compound_interval)?;
 
-    /// Update a protocol's APY (e.g. after on-chain oracle update).
-    pub fn update_protocol_apy(
-        env: Env,
-        admin: Address,
-        protocol_id: u32,
-        new_apy_bps: u32,
-    ) -> Result<(), Error> {
-        Self::assert_admin(&env, &admin)?;
-        if new_apy_bps > MAX_APY_BPS {
-            return Err(Error::InvalidApy);
-        }
-        let mut p = get_protocol(&env, protocol_id)?;
-        p.base_apy_bps = new_apy_bps;
-        set_protocol(&env, protocol_id, &p);
-        env.events().publish((symbol_short!("proto_apy"), protocol_id), new_apy_bps);
-        Ok(())
-    }
-
-    // ── Admin: vaults ─────────────────────────────────────────────────────────
-
-    /// Create a new optimizer vault backed by a protocol. Returns vault ID.
-    pub fn create_vault(
-        env: Env,
-        admin: Address,
-        name: String,
-        protocol_id: u32,
-    ) -> Result<u32, Error> {
-        Self::assert_admin(&env, &admin)?;
-        if name.len() == 0 {
-            return Err(Error::EmptyName);
-        }
-        let protocol = get_protocol(&env, protocol_id)?;
-        let id = get_vault_count(&env) + 1;
-        set_vault(&env, id, &Vault {
+        let id = get_strategy_count(&env) + 1;
+        let strategy = Strategy {
             name,
-            protocol_id,
-            current_apy_bps: protocol.base_apy_bps,
+            protocol,
+            apy_bps,
+            fee_bps,
             total_deposited: 0,
-            pending_rewards: 0,
-            last_compound_ts: env.ledger().timestamp(),
-            total_compounded: 0,
+            total_shares: 0,
             is_active: true,
-        });
-        set_vault_count(&env, id);
-        env.events().publish((symbol_short!("vault_new"), id), protocol_id);
+            compound_interval,
+            last_compound_ts: env.ledger().timestamp(),
+        };
+
+        set_strategy(&env, id, &strategy);
+        set_strategy_count(&env, id);
+
+        env.events()
+            .publish((symbol_short!("strat"), symbol_short!("create"), id), apy_bps);
+
         Ok(id)
     }
 
-    /// Rebalance a vault to a different protocol (optimizes for best APY).
-    pub fn rebalance_vault(
+    pub fn update_strategy(
         env: Env,
         admin: Address,
-        vault_id: u32,
-        new_protocol_id: u32,
+        strategy_id: u32,
+        apy_bps: u32,
+        fee_bps: u32,
+        compound_interval: u64,
+        is_active: bool,
     ) -> Result<(), Error> {
         Self::assert_admin(&env, &admin)?;
-        let protocol = get_protocol(&env, new_protocol_id)?;
-        if !protocol.is_active {
-            return Err(Error::VaultInactive);
+        if apy_bps > MAX_APY_BPS {
+            return Err(Error::InvalidApy);
         }
-        let mut vault = get_vault(&env, vault_id)?;
-        vault.protocol_id = new_protocol_id;
-        vault.current_apy_bps = protocol.base_apy_bps;
-        set_vault(&env, vault_id, &vault);
-        env.events().publish((symbol_short!("rebalance"), vault_id), new_protocol_id);
+        if fee_bps > MAX_FEE_BPS {
+            return Err(Error::InvalidFee);
+        }
+        if compound_interval == 0 {
+            return Err(Error::InvalidInterval);
+        }
+
+        let mut strategy = get_strategy(&env, strategy_id)?;
+        strategy.apy_bps = apy_bps;
+        strategy.fee_bps = fee_bps;
+        strategy.compound_interval = compound_interval;
+        strategy.is_active = is_active;
+
+        set_strategy(&env, strategy_id, &strategy);
+
+        env.events().publish(
+            (symbol_short!("strat"), symbol_short!("update"), strategy_id),
+            (apy_bps, fee_bps),
+        );
+
         Ok(())
     }
 
-    /// Deactivate a vault (no new deposits).
-    pub fn deactivate_vault(env: Env, admin: Address, vault_id: u32) -> Result<(), Error> {
+    pub fn set_executor(env: Env, admin: Address, executor: Address) -> Result<(), Error> {
         Self::assert_admin(&env, &admin)?;
-        let mut vault = get_vault(&env, vault_id)?;
-        vault.is_active = false;
-        set_vault(&env, vault_id, &vault);
+        set_executor(&env, &executor);
+        env.events()
+            .publish((symbol_short!("exec"), symbol_short!("set")), executor);
         Ok(())
     }
-
-    // ── Admin: backtesting ────────────────────────────────────────────────────
-
-    /// Record a backtesting snapshot for a vault (APY + TVL at current timestamp).
-    pub fn record_backtest(env: Env, admin: Address, vault_id: u32) -> Result<u32, Error> {
-        Self::assert_admin(&env, &admin)?;
-        let vault = get_vault(&env, vault_id)?;
-        let id = get_backtest_count(&env) + 1;
-        set_backtest(&env, id, &BacktestEntry {
-            vault_id,
-            apy_bps: vault.current_apy_bps,
-            tvl: vault.total_deposited,
-            timestamp: env.ledger().timestamp(),
-        });
-        set_backtest_count(&env, id);
-        env.events().publish((symbol_short!("backtest"), id), vault_id);
-        Ok(id)
-    }
-
-    // ── Admin: pause ──────────────────────────────────────────────────────────
 
     pub fn pause(env: Env, admin: Address) -> Result<(), Error> {
         Self::assert_admin(&env, &admin)?;
         set_paused(&env, true);
-        env.events().publish((symbol_short!("paused"),), ());
+        env.events().publish((symbol_short!("pause"),), admin);
         Ok(())
     }
 
     pub fn unpause(env: Env, admin: Address) -> Result<(), Error> {
         Self::assert_admin(&env, &admin)?;
         set_paused(&env, false);
-        env.events().publish((symbol_short!("unpaused"),), ());
+        env.events().publish((symbol_short!("unpause"),), admin);
         Ok(())
     }
 
-    // ── User: deposit ─────────────────────────────────────────────────────────
-
-    /// Deposit into a vault. Returns updated compounded balance.
-    pub fn deposit(env: Env, user: Address, vault_id: u32, amount: i128) -> Result<i128, Error> {
-        Self::assert_not_paused(&env)?;
-        Self::assert_initialized(&env)?;
+    pub fn deposit(
+        env: Env,
+        user: Address,
+        strategy_id: u32,
+        amount: i128,
+    ) -> Result<i128, Error> {
+        Self::assert_active(&env)?;
         user.require_auth();
         if amount <= 0 {
             return Err(Error::ZeroAmount);
         }
-        let mut vault = get_vault(&env, vault_id)?;
-        if !vault.is_active {
-            return Err(Error::VaultInactive);
+
+        let mut strategy = get_strategy(&env, strategy_id)?;
+        if !strategy.is_active {
+            return Err(Error::StrategyPaused);
         }
 
-        let mut pos = if has_position(&env, vault_id, &user) {
-            // Accrue pending rewards before adding new deposit
-            let accrued = Self::accrue_rewards(&pos_or_default(&env, vault_id, &user), &vault, env.ledger().timestamp());
-            let mut p = get_position(&env, vault_id, &user)?;
-            p.compounded_balance += accrued;
-            p.last_update_ts = env.ledger().timestamp();
-            p
+        let minted_shares = Self::shares_for_deposit(&strategy, amount);
+        let now = env.ledger().timestamp();
+
+        let mut position = if has_position(&env, strategy_id, &user) {
+            get_position(&env, strategy_id, &user)?
         } else {
-            Position { deposited: 0, compounded_balance: 0, last_update_ts: env.ledger().timestamp() }
+            Position {
+                shares: 0,
+                principal: 0,
+                last_action_ts: now,
+            }
         };
 
-        pos.deposited += amount;
-        pos.compounded_balance += amount;
-        vault.total_deposited += amount;
-        set_position(&env, vault_id, &user, &pos);
-        set_vault(&env, vault_id, &vault);
+        position.shares = position.shares.saturating_add(minted_shares);
+        position.principal = position.principal.saturating_add(amount);
+        position.last_action_ts = now;
 
-        env.events().publish((symbol_short!("deposit"), vault_id), (user, amount));
-        Ok(pos.compounded_balance)
+        strategy.total_shares = strategy.total_shares.saturating_add(minted_shares);
+        strategy.total_deposited = strategy.total_deposited.saturating_add(amount);
+
+        set_position(&env, strategy_id, &user, &position);
+        set_strategy(&env, strategy_id, &strategy);
+
+        env.events()
+            .publish((symbol_short!("deposit"), strategy_id), (user, amount));
+
+        Ok(minted_shares)
     }
 
-    /// Withdraw from a vault. Returns amount withdrawn.
-    pub fn withdraw(env: Env, user: Address, vault_id: u32, amount: i128) -> Result<i128, Error> {
-        Self::assert_not_paused(&env)?;
-        Self::assert_initialized(&env)?;
+    pub fn withdraw(
+        env: Env,
+        user: Address,
+        strategy_id: u32,
+        amount: i128,
+    ) -> Result<i128, Error> {
+        Self::assert_active(&env)?;
         user.require_auth();
         if amount <= 0 {
             return Err(Error::ZeroAmount);
         }
-        let mut vault = get_vault(&env, vault_id)?;
-        let mut pos = get_position(&env, vault_id, &user)?;
 
-        // Accrue before withdraw
-        let accrued = Self::accrue_rewards(&pos, &vault, env.ledger().timestamp());
-        pos.compounded_balance += accrued;
-        pos.last_update_ts = env.ledger().timestamp();
-
-        if amount > pos.compounded_balance {
+        let mut strategy = get_strategy(&env, strategy_id)?;
+        let mut position = get_position(&env, strategy_id, &user)?;
+        let current_balance = Self::value_for_shares(&strategy, position.shares);
+        if amount > current_balance {
             return Err(Error::InsufficientBalance);
         }
 
-        pos.compounded_balance -= amount;
-        // Reduce deposited proportionally (can't go below 0)
-        pos.deposited = pos.deposited.saturating_sub(amount);
-        vault.total_deposited = vault.total_deposited.saturating_sub(amount);
-
-        if pos.compounded_balance == 0 {
-            remove_position(&env, vault_id, &user);
-        } else {
-            set_position(&env, vault_id, &user, &pos);
+        let shares_to_burn = Self::shares_for_withdraw(&strategy, amount);
+        if shares_to_burn > position.shares {
+            return Err(Error::InsufficientBalance);
         }
-        set_vault(&env, vault_id, &vault);
 
-        env.events().publish((symbol_short!("withdraw"), vault_id), (user, amount));
+        position.shares = position.shares.saturating_sub(shares_to_burn);
+        position.principal = position.principal.saturating_sub(amount.min(position.principal));
+        position.last_action_ts = env.ledger().timestamp();
+
+        strategy.total_shares = strategy.total_shares.saturating_sub(shares_to_burn);
+        strategy.total_deposited = strategy.total_deposited.saturating_sub(amount);
+
+        if position.shares == 0 {
+            remove_position(&env, strategy_id, &user);
+        } else {
+            set_position(&env, strategy_id, &user, &position);
+        }
+        set_strategy(&env, strategy_id, &strategy);
+
+        env.events()
+            .publish((symbol_short!("withdrw"), strategy_id), (user, amount));
+
         Ok(amount)
     }
 
-    // ── Auto-compound ─────────────────────────────────────────────────────────
+    pub fn compound(env: Env, caller: Address, strategy_id: u32) -> Result<i128, Error> {
+        Self::assert_active(&env)?;
+        caller.require_auth();
+        Self::assert_compounder(&env, &caller)?;
 
-    /// Compound pending rewards for a vault. Anyone can call this.
-    /// Rewards are calculated based on elapsed time × APY × TVL.
-    /// Returns total rewards compounded.
-    pub fn compound(env: Env, vault_id: u32) -> Result<i128, Error> {
-        Self::assert_not_paused(&env)?;
-        Self::assert_initialized(&env)?;
-        let mut vault = get_vault(&env, vault_id)?;
-        if !vault.is_active {
-            return Err(Error::VaultInactive);
-        }
-
+        let mut strategy = get_strategy(&env, strategy_id)?;
         let now = env.ledger().timestamp();
-        let elapsed = now.saturating_sub(vault.last_compound_ts);
-        if elapsed == 0 || vault.total_deposited == 0 {
-            return Ok(0);
+        let elapsed = now.saturating_sub(strategy.last_compound_ts);
+
+        if elapsed < strategy.compound_interval {
+            return Err(Error::CompoundTooSoon);
         }
 
-        // rewards = TVL × APY_bps / BPS_DENOM × elapsed / SECONDS_PER_YEAR
-        let rewards = vault
+        let gross_reward = strategy
             .total_deposited
-            .saturating_mul(vault.current_apy_bps as i128)
-            / (BPS_DENOM as i128)
-            * (elapsed as i128)
-            / (SECONDS_PER_YEAR as i128);
+            .saturating_mul(strategy.apy_bps as i128)
+            .saturating_mul(elapsed as i128)
+            / (BPS_DENOM as i128 * SECONDS_PER_YEAR as i128);
+        let fee = gross_reward.saturating_mul(strategy.fee_bps as i128) / BPS_DENOM as i128;
+        let net_reward = gross_reward.saturating_sub(fee);
 
-        if rewards <= 0 {
-            return Ok(0);
+        strategy.total_deposited = strategy.total_deposited.saturating_add(net_reward);
+        strategy.last_compound_ts = now;
+        set_strategy(&env, strategy_id, &strategy);
+
+        env.events().publish(
+            (symbol_short!("compound"), strategy_id),
+            (caller, net_reward, fee),
+        );
+
+        Ok(strategy.total_deposited)
+    }
+
+    pub fn get_strategy(env: Env, strategy_id: u32) -> Result<Strategy, Error> {
+        get_strategy(&env, strategy_id)
+    }
+
+    pub fn get_position(
+        env: Env,
+        user: Address,
+        strategy_id: u32,
+    ) -> Result<PositionView, Error> {
+        let strategy = get_strategy(&env, strategy_id)?;
+        let position = get_position(&env, strategy_id, &user)?;
+        Ok(PositionView {
+            shares: position.shares,
+            principal: position.principal,
+            current_balance: Self::value_for_shares(&strategy, position.shares),
+            last_action_ts: position.last_action_ts,
+        })
+    }
+
+    pub fn strategy_count(env: Env) -> u32 {
+        get_strategy_count(&env)
+    }
+
+    pub fn list_strategies(env: Env) -> Vec<u32> {
+        let mut strategies = Vec::new(&env);
+        for id in 1..=get_strategy_count(&env) {
+            if has_strategy(&env, id) {
+                strategies.push_back(id);
+            }
         }
-
-        vault.pending_rewards += rewards;
-        vault.total_deposited += rewards; // reinvest into TVL
-        vault.total_compounded += rewards;
-        vault.last_compound_ts = now;
-        set_vault(&env, vault_id, &vault);
-
-        env.events().publish((symbol_short!("compound"), vault_id), rewards);
-        Ok(rewards)
+        strategies
     }
 
-    // ── Read-only ─────────────────────────────────────────────────────────────
-
-    pub fn get_vault(env: Env, vault_id: u32) -> Result<Vault, Error> {
-        get_vault(&env, vault_id)
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        get_admin(&env)
     }
 
-    pub fn get_protocol(env: Env, protocol_id: u32) -> Result<Protocol, Error> {
-        get_protocol(&env, protocol_id)
+    pub fn get_executor(env: Env) -> Result<Address, Error> {
+        get_executor(&env)
     }
 
-    pub fn get_position(env: Env, user: Address, vault_id: u32) -> Result<Position, Error> {
-        get_position(&env, vault_id, &user)
-    }
-
-    pub fn get_backtest(env: Env, backtest_id: u32) -> Result<BacktestEntry, Error> {
-        get_backtest(&env, backtest_id)
-    }
-
-    /// Estimate current compounded balance for a user (read-only).
-    pub fn estimated_balance(env: Env, user: Address, vault_id: u32) -> Result<i128, Error> {
-        let vault = get_vault(&env, vault_id)?;
-        let pos = get_position(&env, vault_id, &user)?;
-        let accrued = Self::accrue_rewards(&pos, &vault, env.ledger().timestamp());
-        Ok(pos.compounded_balance + accrued)
-    }
-
-    pub fn vault_count(env: Env) -> u32 { get_vault_count(&env) }
-    pub fn protocol_count(env: Env) -> u32 { get_protocol_count(&env) }
-    pub fn backtest_count(env: Env) -> u32 { get_backtest_count(&env) }
-    pub fn is_initialized(env: Env) -> bool { is_initialized(&env) }
-    pub fn is_paused(env: Env) -> bool { is_paused(&env) }
-    pub fn get_admin(env: Env) -> Result<Address, Error> { get_admin(&env) }
-
-    // ── Internal ──────────────────────────────────────────────────────────────
-
-    /// Pro-rata reward accrual for a single position since last_update_ts.
-    fn accrue_rewards(pos: &Position, vault: &Vault, now: u64) -> i128 {
-        if vault.total_deposited == 0 || pos.compounded_balance == 0 {
-            return 0;
-        }
-        let elapsed = now.saturating_sub(pos.last_update_ts);
-        if elapsed == 0 {
-            return 0;
-        }
-        pos.compounded_balance
-            .saturating_mul(vault.current_apy_bps as i128)
-            / (BPS_DENOM as i128)
-            * (elapsed as i128)
-            / (SECONDS_PER_YEAR as i128)
+    pub fn paused(env: Env) -> bool {
+        is_paused(&env)
     }
 
     fn assert_initialized(env: &Env) -> Result<(), Error> {
-        if !is_initialized(env) { return Err(Error::NotInitialized); }
+        if !is_initialized(env) {
+            return Err(Error::NotInitialized);
+        }
         Ok(())
     }
 
-    fn assert_not_paused(env: &Env) -> Result<(), Error> {
-        if is_paused(env) { return Err(Error::ContractPaused); }
+    fn assert_active(env: &Env) -> Result<(), Error> {
+        Self::assert_initialized(env)?;
+        if is_paused(env) {
+            return Err(Error::ContractPaused);
+        }
         Ok(())
     }
 
     fn assert_admin(env: &Env, caller: &Address) -> Result<(), Error> {
         Self::assert_initialized(env)?;
         caller.require_auth();
-        if *caller != get_admin(env)? { return Err(Error::Unauthorized); }
+        if get_admin(env)? != *caller {
+            return Err(Error::Unauthorized);
+        }
         Ok(())
     }
-}
 
-/// Helper: get position or return a zero default (used in deposit accrual).
-fn pos_or_default(env: &Env, vault_id: u32, user: &Address) -> Position {
-    get_position(env, vault_id, user).unwrap_or(Position {
-        deposited: 0,
-        compounded_balance: 0,
-        last_update_ts: env.ledger().timestamp(),
-    })
+    fn assert_compounder(env: &Env, caller: &Address) -> Result<(), Error> {
+        let admin = get_admin(env)?;
+        let executor = get_executor(env)?;
+        if *caller != admin && *caller != executor {
+            return Err(Error::Unauthorized);
+        }
+        Ok(())
+    }
+
+    fn assert_strategy_params(
+        name: &String,
+        protocol: &String,
+        apy_bps: u32,
+        fee_bps: u32,
+        compound_interval: u64,
+    ) -> Result<(), Error> {
+        if name.len() == 0 {
+            return Err(Error::EmptyName);
+        }
+        if protocol.len() == 0 {
+            return Err(Error::InvalidProtocol);
+        }
+        if apy_bps > MAX_APY_BPS {
+            return Err(Error::InvalidApy);
+        }
+        if fee_bps > MAX_FEE_BPS {
+            return Err(Error::InvalidFee);
+        }
+        if compound_interval == 0 {
+            return Err(Error::InvalidInterval);
+        }
+        Ok(())
+    }
+
+    fn shares_for_deposit(strategy: &Strategy, amount: i128) -> i128 {
+        if strategy.total_shares == 0 || strategy.total_deposited == 0 {
+            return amount;
+        }
+
+        amount.saturating_mul(strategy.total_shares) / strategy.total_deposited
+    }
+
+    fn shares_for_withdraw(strategy: &Strategy, amount: i128) -> i128 {
+        if strategy.total_shares == 0 || strategy.total_deposited == 0 {
+            return amount;
+        }
+
+        let numerator = amount.saturating_mul(strategy.total_shares);
+        let quotient = numerator / strategy.total_deposited;
+        let remainder = numerator % strategy.total_deposited;
+        if remainder == 0 {
+            quotient
+        } else {
+            quotient.saturating_add(1)
+        }
+    }
+
+    fn value_for_shares(strategy: &Strategy, shares: i128) -> i128 {
+        if strategy.total_shares == 0 || shares == 0 {
+            return 0;
+        }
+
+        shares.saturating_mul(strategy.total_deposited) / strategy.total_shares
+    }
 }
